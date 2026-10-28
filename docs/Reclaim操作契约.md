@@ -31,7 +31,7 @@ Reclaim 不强制终止旧 handler，不增加 attempts，不通过取消标记�
 重试调度候选：
 
 - 从当前 retry ZSET 内选取 score ≤ now 的成员。
-- 详情存在且 status = retry_wait，详情 next_retry_at 与当前 score 一致。
+- 详情存在且 status = retry_wait；重试到期时间仅从 retry ZSET 的当前 score 读取，不与任务详情中的时间字段比较。
 - 没有当前执行身份、active 或 lease 成员，且仍有尝试额度。
 - 不已存在于 pending。
 
@@ -50,10 +50,10 @@ Reclaim 不强制终止旧 handler，不增加 attempts，不通过取消标记�
 
 | 条件 | 修改 |
 | --- | --- |
-| attempts < max_retry + 1 | status = retry_wait；读取 Hash 中 retry_delay，计算 next_retry_at = now + retry_delay × 1000，并以相同 score 加入 retry；finish_at 为空 |
-| attempts = max_retry + 1 | status = failed；设置 finish_at = now，清除 next_retry_at，不加入等待索引 |
+| attempts < max_retry + 1 | status = retry_wait；读取 Hash 中 retry_delay，计算 next_retry_at = now + retry_delay × 1000，并将该值仅作为 score 加入 retry ZSET；finished_at 为空 |
+| attempts = max_retry + 1 | status = failed；设置 finished_at = now，不加入等待索引 |
 
-retry_delay 为 Submit 保存的不可变配置，默认 30 秒，最小 15 秒。生成重试时间不得使用 Server 墙上时钟或临时覆盖值。
+retry_delay 为 Submit 保存的不可变配置，默认 30 秒，最小 15 秒。生成重试时间不得使用 Server 墙上时钟或临时覆盖值。next_retry_at 仅表示 retry ZSET 的 score，不作为字段单独存入任务详情 Hash；移除 retry 成员即移除对应重试到期时间，不额外读写或清理详情时间字段。
 
 ### 重试到期：retry_wait → pending
 
@@ -61,7 +61,7 @@ retry_delay 为 Submit 保存的不可变配置，默认 30 秒，最小 15 秒�
 
 1. 检查当前 status、retry score 及其他前置条件。
 2. 从 retry 移除 task_id。
-3. 设置 status = pending，清除 next_retry_at。
+3. 设置 status = pending。
 4. 将 task_id 加入对应逻辑队列 pending 一次。
 
 不增加 attempts，不创建执行身份或 lease，不清空最近失败信息。只有后续 Claim 成功授予执行权时才增加一次 attempts。
@@ -74,7 +74,7 @@ retry_delay 为 Submit 保存的不可变配置，默认 30 秒，最小 15 秒�
 
 - Lua 使用当前数据判断，不信任旧扫描结果。
 - running 正常对应 active、lease 和当前执行身份。
-- retry_wait 正常对应 retry 及一致的 next_retry_at，不保留当前执行身份、active 或 lease。
+- retry_wait 正常对应 retry ZSET 成员，其 score 为 next_retry_at；任务详情不保存该时间，也不保留当前执行身份、active 或 lease。
 - pending 正常对应 pending 索引，不同时位于 retry、active、lease。
 - failed、completed、canceled 为终态，不被 Reclaim 再次调度。
 - 每次迁移从源索引移除并只加入一次目标索引，回收和重试调度都不增加 attempts。
@@ -123,10 +123,10 @@ Redis 内一个当前有效身份，不代表物理上不存在仍运行的旧 h
 
 ## 10. 验收场景
 
-- 过期 running、有剩余额度：移除 active、lease，撤销身份，进入 retry_wait；错误时间、next_retry_at、retry score 正确，attempts 不变。
-- 过期 running、额度耗尽：进入 failed，finish_at 正确，没有等待、执行索引或当前身份。
+- 过期 running、有剩余额度：移除 active、lease，撤销身份，进入 retry_wait；错误时间、retry score 正确，任务详情不含 next_retry_at 字段，attempts 不变。
+- 过期 running、额度耗尽：进入 failed，finished_at 正确，没有等待、执行索引或当前身份。
 - 未到期租约：不修改；边界 now = score 时允许回收。
-- retry 到期：移除 retry、改 pending、清除 next_retry_at、入 pending 一次；未到期不迁移。
+- retry 到期：移除 retry、改 pending、入 pending 一次；未到期不迁移。
 - 两 Server 同时回收同一批任务：不重复入 retry 或 pending，不重复消耗尝试次数。
 - Renew 先延长、Cancel 先取消、上报先成功：依据当前状态和 score 处理。
 - 回收后重新领取：旧 token 续租和上报失败，新一轮未到期租约不受影响。

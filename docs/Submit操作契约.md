@@ -93,7 +93,7 @@ Submit 本身不增加执行尝试次数。
 
 时间戳统一采用 Unix 毫秒，execution_timeout、retry_delay 使用整数秒。
 
-不在 Redis 任务详情中设置 execution_deadline_at，也不在 Lua 中按执行时长强制拒绝操作。租约到期时间仅保存在 lease ZSET 的 score 中，不在任务详情中重复保存 lease_expires_at。
+不在 Redis 任务详情中设置 execution_deadline_at，也不在 Lua 中按执行时长强制拒绝操作。租约到期时间仅保存在 lease ZSET 的 score 中，不在任务详情中重复保存 lease_expires_at。重试到期时间 next_retry_at 仅作为 retry ZSET 的 score 保存，也不作为字段单独写入任务详情。
 
 Server 从 Claim 响应中取得 execution_timeout，完成本地登记后，在启动 handler 协程的同时建立时长为 execution_timeout 的本地定时器及取消 context。handler 返回与定时器到期竞争，Server 只选择一个结果处理分支。不统计或扣除 Claim 耗时，也不需要比较 Server 与 Redis 的墙上时钟来计算执行超时。
 
@@ -144,7 +144,7 @@ Submit 校验类型标识的格式。除非另行设计统一的类型注册信�
 - 初始化 status = pending。
 - 初始化 attempts = 0。
 - 不初始化取消标记、execution_deadline_at 或详情中的 lease_expires_at，这些字段初版不使用。
-- 初始没有执行身份、lease 索引项、下次重试时间、执行结果或执行错误。
+- 初始没有执行身份、lease 或 retry 索引项、执行结果或执行错误。
 - 将 task_id 加入当前逻辑队列的 pending 索引一次。
 
 保存 timeout 配置不表示此时已经开始执行计时。

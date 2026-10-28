@@ -39,8 +39,8 @@ Server 在 handler 返回错误，或者本地 execution_timeout 到期时，报
 
 | 当前额度 | 目标状态及数据 |
 | --- | --- |
-| attempts < max_retry + 1 | status = retry_wait；读取任务 Hash 中 retry_delay，生成 next_retry_at 并加入 retry |
-| attempts = max_retry + 1 | status = failed；设置 finish_at，清除 next_retry_at，不加入等待索引 |
+| attempts < max_retry + 1 | status = retry_wait；读取任务 Hash 中 retry_delay，计算 next_retry_at 并仅作为 score 加入 retry ZSET |
+| attempts = max_retry + 1 | status = failed；设置 finished_at，不加入等待索引 |
 
 正常数据应满足 attempts ≤ max_retry + 1；大于上限属于一致性异常，不作为正常路径吞掉。
 
@@ -50,7 +50,7 @@ Server 在 handler 返回错误，或者本地 execution_timeout 到期时，报
     retry ZSET 的 member = task_id
     retry ZSET 的 score = next_retry_at
 
-retry_delay 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在上报时覆盖。retry_wait 的 finish_at 应为空；next_retry_at 详情值和 retry score 同步写入。
+retry_delay 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在上报时覆盖。retry_wait 的 finished_at 应为空；next_retry_at 只是重试到期时间的名称，仅作为 retry ZSET 的 score 保存，不单独写入任务详情 Hash，也不存在详情时间字段的同步写入或清理。
 
 返回 applied、error：
 
@@ -112,8 +112,8 @@ retry_delay 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在�
 
 ## 10. 验收场景
 
-- 有剩余额度：进入 retry_wait，错误字段正确，score = Redis now + 保存的 retry_delay × 1000，详情 next_retry_at 与 score 一致。
-- 额度耗尽：进入 failed 并写 finish_at，无 retry 成员，attempts 不变。
+- 有剩余额度：进入 retry_wait，错误字段正确，score = Redis now + 保存的 retry_delay × 1000，任务详情不含 next_retry_at 字段。
+- 额度耗尽：进入 failed 并写 finished_at，无 retry 成员，attempts 不变。
 - canceled、completed 或其他非 running：拒绝且不补写错误。
 - 旧 token、已过期或缺失租约：拒绝，不影响新一轮。
 - 首次成功但响应丢失：重复上报不重复迁移、入队或更新时间。

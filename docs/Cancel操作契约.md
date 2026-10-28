@@ -33,10 +33,10 @@ canceled 表示平台不再接受该任务的执行和上报，不表示 handler
 | 原状态 | 索引处理 |
 | --- | --- |
 | pending | 从当前逻辑队列的 pending 移除 task_id |
-| retry_wait | 从 retry ZSET 移除 task_id，清除详情中的 next_retry_at |
+| retry_wait | 从 retry ZSET 移除 task_id |
 | running | 从 active、lease 移除 task_id，撤销 owner_id、attempt_token |
 
-随后设置 status = canceled、finish_at = Redis 当前 Unix 毫秒；清除残留的 next_retry_at，不增加 attempts，不修改原始提交配置。正常终态不保留 pending、retry、active、lease 成员或当前执行身份。
+随后设置 status = canceled、finished_at = Redis 当前 Unix 毫秒；不增加 attempts，不修改原始提交配置。正常终态不保留 pending、retry、active、lease 成员或当前执行身份。
 
 仅对原状态为 running 的任务：先在脚本内保存原 owner_id 和 attempt_token，再撤销身份，并向 cancel:{owner_id} 推送包含 task_id 和原 attempt_token 的取消通知。通知不在脚本内等待消费确认或重试。
 
@@ -54,7 +54,7 @@ Redis 取消生效，不以 Server 是否收到通知或 handler 是否退出为
 
 ## 5. 原子性与不变量
 
-任务存在性、状态及数据类型检查，按状态移除索引，撤销身份，设置 canceled、finish_at，以及发出运行中任务的通知，在同一 Lua 中执行。写入前完成可预见的校验。
+任务存在性、状态及数据类型检查，按状态移除索引，撤销身份，设置 canceled、finished_at，以及发出运行中任务的通知，在同一 Lua 中执行。写入前完成可预见的校验。
 
 - 终态不得被其他操作改回 running、retry_wait 或 pending。
 - 取消不消耗新的尝试次数。
@@ -84,7 +84,7 @@ Redis 取消生效，不以 Server 是否收到通知或 handler 是否退出为
 
 ## 8. 重复请求与幂等规则
 
-首次取消只生效一次；重复请求看到 canceled 后返回 already_terminal，不重复修改 finish_at 或推送通知。
+首次取消只生效一次；重复请求看到 canceled 后返回 already_terminal，不重复修改 finished_at 或推送通知。
 
 首次取消成功但响应丢失时，重复结果只能说明当前任务已处于终态，不承诺复现第一次请求的返回值。不新增取消请求去重记录。
 
@@ -105,10 +105,10 @@ Redis 取消生效，不以 Server 是否收到通知或 handler 是否退出为
 
 ## 10. 验收场景
 
-- 分别取消 pending、retry_wait、running：检查 canceled、finish_at、对应索引及当前身份清理，attempts 不变。
+- 分别取消 pending、retry_wait、running：检查 canceled、finished_at、对应索引及当前身份清理，attempts 不变。
 - 任务不存在：返回 not_found，不创建任务。
-- 对三个终态取消：返回 already_terminal 和实际状态，不修改结果、错误或 finish_at。
-- 响应丢失后重试：无重复迁移、通知和 finish_at 更新。
+- 对三个终态取消：返回 already_terminal 和实际状态，不修改结果、错误或 finished_at。
+- 响应丢失后重试：无重复迁移、通知和 finished_at 更新。
 - 分别安排取消与领取、成功上报、失败上报、回收的先后顺序：符合第 7 节。
 - handler 延迟退出或忽略 context：取消后不提前归还执行槽。
 - 制造通知先于本地登记的窗口：记录 handler 可能启动的已知缺陷，验证 Redis 仍拒绝后续操作，不把不启动列为初版保证。

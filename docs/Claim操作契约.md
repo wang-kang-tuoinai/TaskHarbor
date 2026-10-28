@@ -290,9 +290,9 @@ active 与 lease 同时包含任务属于正常情况。
 | running、租约已到期、还有尝试额度 | retry_wait |
 | 已经 canceled 或其他终态 | 不再迁移或重试；正常 Cancel 已移除 lease，残留项按一致性异常处理 |
 
-进入 retry_wait 时，读取任务 Hash 中不可变的 retry_delay（默认 30 秒，最小 15 秒），设置 next_retry_at = Redis 当前时间（毫秒）+ retry_delay × 1000，并将相同值写入 retry ZSET 的 score。
+进入 retry_wait 时，读取任务 Hash 中不可变的 retry_delay（默认 30 秒，最小 15 秒），计算 next_retry_at = Redis 当前时间（毫秒）+ retry_delay × 1000，仅将该值写入 retry ZSET 的 score。next_retry_at 是重试到期时间的名称，不作为字段单独存入任务详情 Hash。
 
-重试时间到达后，由 Reclaim 在 Lua 内原子移除 retry 成员、将状态修改为 pending、清除 next_retry_at 并加入 pending 一次。
+重试时间到达后，由 Reclaim 在 Lua 内原子移除 retry 成员、将状态修改为 pending 并加入 pending 一次。
 
 回收时必须原子完成：
 

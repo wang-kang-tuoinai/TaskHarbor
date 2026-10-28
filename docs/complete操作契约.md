@@ -33,9 +33,9 @@ execution_timeout 由 Server 本地控制。handler 成功和超时处理只选�
 
 同一 Lua 中完成：
 
-- 保存 result，设置 status = completed、finish_at = Redis 当前 Unix 毫秒。
+- 保存 result，设置 status = completed、finished_at = Redis 当前 Unix 毫秒。
 - 从 active、lease 移除 task_id。
-- 撤销 owner_id、attempt_token，清除 next_retry_at（如有）。
+- 撤销 owner_id、attempt_token。
 - 不加入 pending 或 retry，不增加 attempts，不改原始配置，不清空历史失败信息。
 
 返回 applied、error：
@@ -83,7 +83,7 @@ applied 仅在 error 为 nil 时有确定含义。收到拒绝不等于 handler 
 
 ## 8. 重复请求与幂等规则
 
-首次成功后，重复请求因非 running 被拒绝，不重复改结果、finish_at 或执行次数。
+首次成功后，重复请求因非 running 被拒绝，不重复改结果、finished_at 或执行次数。
 
 若任务已重试并被重新领取，旧请求还会因 token 不匹配被拒绝。这里保证重复请求不会再次产生状态修改，不保证返回与首次相同的结果，也不新增完成请求去重记录。
 
@@ -100,7 +100,7 @@ applied 仅在 error 为 nil 时有确定含义。收到拒绝不等于 handler 
 
 ## 10. 验收场景
 
-- 正常单任务完成：completed、result、finish_at 正确，active、lease 及当前身份清除，attempts 不变。
+- 正常单任务完成：completed、result、finished_at 正确，active、lease 及当前身份清除，attempts 不变。
 - canceled 或其他非 running：拒绝，不覆盖终态及错误信息。
 - token 不符、租约到期或缺失：拒绝，不修改新一轮数据。
 - 完成成功但响应丢失：重复请求不重复写入；允许返回前置条件不满足。
