@@ -1,0 +1,24 @@
+# 编译产物
+/TaskHarbor
+/TaskHarbor.exe
+*.exe
+*.test
+*.out
+
+# 依赖与工具链
+/vendor/
+go.work
+go.work.sum
+
+# 测试与覆盖率
+*.cover
+coverage.out
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
