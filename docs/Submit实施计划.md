@@ -13,7 +13,7 @@
 - max_retry 默认 0；拒绝负数，须保证 max_retry + 1 在 Go 和 Lua 中可安全表示。
 - execution_timeout_ms 默认 60000，最小 1；retry_delay_ms 默认 30000，最小 15000。time.Duration 必须整除 time.Millisecond，拒绝小数毫秒，不截断。
 - 不开放 queue 选项，统一使用 default。每次创建独立配置，依次应用选项后校验；拒绝 nil 选项元素。
-- 待确认项：task_type 的具体格式和长度、时长公开上限、max_retry 的实现上限、Redis 支持版本。此前建议的 128 字节、24 小时、7 天尚未确认，不当作既定规则；编码前补齐这些值。
+- 已确认：task_type 为 1～128 字节，只允许 ASCII 字母、数字、下划线、连字符、点和冒号，大小写敏感；execution_timeout_ms 最大 86400000（24 小时），retry_delay_ms 最大 604800000（7 天），均包含上限。待确认项为 max_retry 的具体上限和 Redis 支持版本。
 
 ## 2. 文件与依赖方向
 
