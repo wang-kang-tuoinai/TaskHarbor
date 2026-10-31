@@ -4,7 +4,7 @@
 
 ## 1. 操作目的
 
-Server 在 handler 返回错误，或者本地 execution_timeout 到期时，报告本轮失败并释放 Redis 执行权，根据已消耗尝试次数进入 retry_wait 或 failed。
+Server 在 handler 返回错误，或者本地 execution_timeout_ms 到期时，报告本轮失败并释放 Redis 执行权，根据已消耗尝试次数进入 retry_wait 或 failed。
 
 超时是触发失败上报的事件，不是新的任务状态。超时上报可以在 handler 尚未退出时发起，但不允许提前归还本地执行槽。
 
@@ -14,7 +14,7 @@ Server 在 handler 返回错误，或者本地 execution_timeout 到期时，报
 - 输入：单个 task_id、该轮 attempt_token、error_message。
 - task_id、attempt_token、error_message 必填；标识非空，错误内容遵守平台大小限制。
 - 超时由 Server 生成明确的超时错误信息，业务调用方不指定当前 attempts 或目标状态。
-- retry_delay 不随本次上报传入，读取 Submit 保存的不可变配置。
+- retry_delay_ms 不随本次上报传入，读取 Submit 保存的不可变配置。
 - 网络重试复用相同 task_id、attempt_token 和错误内容。
 
 ## 3. 执行前置条件
@@ -25,7 +25,7 @@ Server 在 handler 返回错误，或者本地 execution_timeout 到期时，报
 2. attempt_token 与当前执行身份一致。
 3. active 中存在 task_id，lease 中存在该 task_id。
 4. Redis 当前时间严格小于 lease score；相等即到期。
-5. attempts、max_retry 及本次可能使用的 retry_delay 等记录合法，异常数据按一致性错误处理。
+5. attempts、max_retry 及本次可能使用的 retry_delay_ms 等记录合法，异常数据按一致性错误处理。
 
 不设置或读取取消标记。只要任务不是 running，包括已经 canceled，就拒绝本次上报，不补写错误和错误时间。
 
@@ -39,18 +39,18 @@ Server 在 handler 返回错误，或者本地 execution_timeout 到期时，报
 
 | 当前额度 | 目标状态及数据 |
 | --- | --- |
-| attempts < max_retry + 1 | status = retry_wait；读取任务 Hash 中 retry_delay，计算 next_retry_at 并仅作为 score 加入 retry ZSET |
+| attempts < max_retry + 1 | status = retry_wait；读取任务 Hash 中 retry_delay_ms，计算 next_retry_at 并仅作为 score 加入 retry ZSET |
 | attempts = max_retry + 1 | status = failed；设置 finished_at，不加入等待索引 |
 
 正常数据应满足 attempts ≤ max_retry + 1；大于上限属于一致性异常，不作为正常路径吞掉。
 
 重试时间统一为：
 
-    next_retry_at = Redis 当前 Unix 毫秒 + retry_delay × 1000
+    next_retry_at = Redis 当前 Unix 毫秒 + retry_delay_ms
     retry ZSET 的 member = task_id
     retry ZSET 的 score = next_retry_at
 
-retry_delay 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在上报时覆盖。retry_wait 的 finished_at 应为空；next_retry_at 只是重试到期时间的名称，仅作为 retry ZSET 的 score 保存，不单独写入任务详情 Hash，也不存在详情时间字段的同步写入或清理。
+retry_delay_ms 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在上报时覆盖。retry_wait 的 finished_at 应为空；next_retry_at 只是重试到期时间的名称，仅作为 retry ZSET 的 score 保存，不单独写入任务详情 Hash，也不存在详情时间字段的同步写入或清理。
 
 返回 applied、error：
 
@@ -76,7 +76,7 @@ retry_delay 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在�
 - 网络/存储异常或结果未知：最多额外重试两次，含首次最多三次；收到确定成功或拒绝即停止。
 - 重试耗尽后，从续租集合移除该任务并结束本地上报流程；若 Redis 仍保有完整 running、active、lease，则由 Reclaim 到期处理。
 - handler 正常返回错误后的有界上报期间，可继续对该轮续租；上报最终结束后必须停止。
-- 本地超时已裁定时，应立即停止续租并取消 context，再调用本操作，不为等待上报而延长 execution_timeout。
+- 本地超时已裁定时，应立即停止续租并取消 context，再调用本操作，不为等待上报而延长 execution_timeout_ms。
 - 结束上报管理后，不再接受该轮迟到 handler 返回作为新的上报结果。
 - handler 尚未退出时，仍保留退出等待和槽归还责任。执行槽只在 handler 实际退出后归还一次，不能靠删除续租记录提前归还。
 
@@ -108,11 +108,11 @@ retry_delay 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得在�
 - 授予执行权消耗尝试预算，未完成的尝试按预算恢复，不保证 handler 必定启动。
 - Redis 故障后的持久性依赖部署配置，不引入 MySQL 补写或对账。
 - Lua 错误不自动回滚此前写入。部分写入后的自动检测、对账和修复不属于第一版；移除了 lease 却未完成迁移等异常不能承诺由普通回收器发现。
-- execution_timeout 仅在 Server 本地控制，不保存 execution_deadline_at。初版也不在本地维护租约有效期，相关保护明确留待后续。
+- execution_timeout_ms 仅在 Server 本地控制，不保存 execution_deadline_at。初版也不在本地维护租约有效期，相关保护明确留待后续。
 
 ## 10. 验收场景
 
-- 有剩余额度：进入 retry_wait，错误字段正确，score = Redis now + 保存的 retry_delay × 1000，任务详情不含 next_retry_at 字段。
+- 有剩余额度：进入 retry_wait，错误字段正确，score = Redis now + 保存的 retry_delay_ms，任务详情不含 next_retry_at 字段。
 - 额度耗尽：进入 failed 并写 finished_at，无 retry 成员，attempts 不变。
 - canceled、completed 或其他非 running：拒绝且不补写错误。
 - 旧 token、已过期或缺失租约：拒绝，不影响新一轮。

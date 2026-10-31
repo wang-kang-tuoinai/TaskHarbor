@@ -26,7 +26,7 @@ Reclaim 不强制终止旧 handler，不增加 attempts，不通过取消标记�
 - 从当前 lease ZSET 内选取 score ≤ now 的成员。
 - 任务详情存在、status = running，且当前 owner_id、attempt_token、active、lease 关系完整。
 - 重新读取当前 score 并判断到期，不凭成员存在性判断租约失效。
-- attempts、max_retry、可能使用的 retry_delay 合法。
+- attempts、max_retry、可能使用的 retry_delay_ms 合法。
 
 重试调度候选：
 
@@ -50,10 +50,10 @@ Reclaim 不强制终止旧 handler，不增加 attempts，不通过取消标记�
 
 | 条件 | 修改 |
 | --- | --- |
-| attempts < max_retry + 1 | status = retry_wait；读取 Hash 中 retry_delay，计算 next_retry_at = now + retry_delay × 1000，并将该值仅作为 score 加入 retry ZSET；finished_at 为空 |
+| attempts < max_retry + 1 | status = retry_wait；读取 Hash 中 retry_delay_ms，计算 next_retry_at = now + retry_delay_ms，并将该值仅作为 score 加入 retry ZSET；finished_at 为空 |
 | attempts = max_retry + 1 | status = failed；设置 finished_at = now，不加入等待索引 |
 
-retry_delay 为 Submit 保存的不可变配置，默认 30 秒，最小 15 秒。生成重试时间不得使用 Server 墙上时钟或临时覆盖值。next_retry_at 仅表示 retry ZSET 的 score，不作为字段单独存入任务详情 Hash；移除 retry 成员即移除对应重试到期时间，不额外读写或清理详情时间字段。
+retry_delay_ms 为 Submit 保存的不可变配置，默认 30 秒，最小 15 秒。生成重试时间不得使用 Server 墙上时钟或临时覆盖值。next_retry_at 仅表示 retry ZSET 的 score，不作为字段单独存入任务详情 Hash；移除 retry 成员即移除对应重试到期时间，不额外读写或清理详情时间字段。
 
 ### 重试到期：retry_wait → pending
 
@@ -116,7 +116,7 @@ Redis 内一个当前有效身份，不代表物理上不存在仍运行的旧 h
 - Server 在请求生效前退出：下一轮仍可选取原到期成员。
 - Redis 自身故障后的数据保留取决于尚待明确的持久化、复制和恢复配置；重启不清空或盲目重建索引。
 - Lua 错误不自动回滚此前写入。部分写入不完整状态的自动检测、对账和修复不在第一版范围，不声称重启或周期回收必然解决。
-- execution_timeout 只由 Server 本地控制，本操作只按 lease score 判断租约到期，不读取 execution_deadline_at。
+- execution_timeout_ms 只由 Server 本地控制，本操作只按 lease score 判断租约到期，不读取 execution_deadline_at。
 - 本地超时 ReportFailure 未成功时，状态可能延迟到 lease 到期才推进。
 - 本地租约到期保护暂未开发，旧 handler 可能仍在执行；本操作不保证强制终止或撤销业务副作用。
 - 授予执行权消耗尝试预算，未完成的尝试按预算恢复，不保证 handler 必定启动。

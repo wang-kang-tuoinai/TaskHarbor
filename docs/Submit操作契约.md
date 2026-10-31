@@ -25,34 +25,40 @@ Submit 成功表示平台已接受该任务，不表示任务已经执行成功�
 | `task_id`           | 整个任务的唯一标识                            | 必填、非空，由调用方提供，平台不自动生成；同一次逻辑提交的重试必须复用          |
 | `task_type`         | 执行端查找 handler 使用的任务类型                | 必填、非空，符合平台规定的格式与长度                           |
 | `payload`           | 交给 handler 的业务参数                     | 无参数任务允许为空，大小不能超过平台配置上限                       |
-| `max_retry`         | 首次尝试之外允许重试的最大次数                      | 必填，非负整数；0 表示不重试                              |
-| `execution_timeout` | 单次执行尝试的时长上限                          | 可选，单位为整数秒；省略时默认 60；显式提供时必须大于 0，且不超过平台公开的时长上限 |
-| `retry_delay`       | 每次进入 retry_wait 后等待下一次可领取的时长 | 可选，单位为整数秒；省略时默认 30；显式提供时必须 ≥ 15，且不超过平台公开的上限 |
+| `max_retry`         | 首次尝试之外允许重试的最大次数                      | 可选，默认 0，非负整数；0 表示不重试                              |
+| `execution_timeout_ms` | 单次执行尝试的时长上限                          | 可选，单位为整数毫秒；省略时默认 60000；显式提供时必须大于 0，且不超过平台公开的时长上限 |
+| `retry_delay_ms`       | 每次进入 retry_wait 后等待下一次可领取的时长 | 可选，单位为整数毫秒；省略时默认 30000；显式提供时必须 ≥ 15000，且不超过平台公开的上限 |
 
 ### 参数规范化
 
-字段名统一为 `execution_timeout`。
+max_retry 省略时规范化为 0，与显式 0 等价；保存并比较最终值，并确保 max_retry + 1 可安全表示。
 
-平台先将省略的 execution_timeout 规范化为 60 秒，再进行创建或幂等比较，保存最终有效值。
+Go API 使用 time.Duration，允许整数毫秒输入，例如 1500ms；非整数毫秒必须拒绝，不得截断。payload 最大 1 MiB（1048576 字节），nil 与空切片统一为空字节，不要求 JSON。task_id 不自动裁剪或改写。
 
-- 省略参数与显式传入 60 等价。
+任务类型的具体格式与长度、两个时长的公开上限和 max_retry 的实现上限仍待确认，实施前必须补齐。此前建议的 128 字节、24 小时和 7 天未作为已确认规则。
+
+字段名统一为 `execution_timeout_ms`。
+
+平台先将省略的 execution_timeout_ms 规范化为 60 秒，再进行创建或幂等比较，保存最终有效值。
+
+- 省略参数与显式传入 60000 等价。
 - 显式传入 0、负数或非整数均非法。
 - 不能把 0 当作未传。
 - 输入解析时必须能够区分“未提供”和“显式提供 0”。
 
 初版默认值固定为 60 秒，不随执行实例配置变化。平台时长上限属于统一部署配置，应在实现时公布并校验，不得低于默认值。
 
-秒数转换为内部时长或时间戳时，需要检查溢出。后续改变默认值需要明确版本规则，不能破坏已有重试语义。
+毫秒数转换为内部时长或时间戳时，需要检查溢出。后续改变默认值需要明确版本规则，不能破坏已有重试语义。
 
-同一次逻辑提交的所有重试必须保持相同的最终配置，建议调用方首次提交就显式指定 execution_timeout。
+同一次逻辑提交的所有重试必须保持相同的最终配置，建议调用方首次提交就显式指定 execution_timeout_ms。
 
-retry_delay 在首次创建和幂等比较前规范化：
+retry_delay_ms 在首次创建和幂等比较前规范化：
 
-- 省略时使用 30 秒，省略与显式传入 30 等价。
-- 显式传入的值必须是大于或等于 15 的整数秒；0、负数、小于 15、非整数或超过平台上限均非法。
+- 省略时使用 30 秒，省略与显式传入 30000 等价。
+- 显式传入的值必须是大于或等于 15000 的整数毫秒；0、负数、小于 15000、非整数或超过平台上限均非法。
 - 平台上限属于统一部署配置，不得低于默认值 30 秒。
 - 将规范化后的值保存在任务详情 Hash，作为不可变初始配置。
-- 与其他时长一样，秒转毫秒及时间相加必须检查溢出。
+- 与其他时长一样，毫秒转换为内部时长及时间相加必须检查溢出。
 - ReportFailure、Reclaim 读取该保存值，用 Redis 当前时间生成重试到期时间，不由 Worker 临时覆盖。
 
 初版采用平台范围内唯一的 task_id。两个不同 ID 可以提交内容完全相同的任务。
@@ -84,18 +90,18 @@ Submit 本身不增加执行尝试次数。
 
 ### 单次执行超时的语义
 
-- execution_timeout 从 Server 启动本轮 handler 时开始计算，同时建立时长为 execution_timeout 的本地定时器。
+- execution_timeout_ms 从 Server 启动本轮 handler 时开始计算，同时建立时长为 execution_timeout_ms 的本地定时器。
 - 不从 Submit、Claim 请求发出、Redis 授予执行权或 Claim 响应返回时提前开始计时。
 - pending、retry_wait、Claim 请求和响应的耗时，以及启动 handler 前的本地准备时间，都不计入单次执行时长。
-- 每次重新领取并启动 handler 时，使用同一个不可变 timeout 配置，为新一轮提供完整的 execution_timeout。
+- 每次重新领取并启动 handler 时，使用同一个不可变 timeout 配置，为新一轮提供完整的 execution_timeout_ms。
 - 超时由 Server 本地定时器控制；续租不重置本地定时器。
 - timeout 不是整个任务的总截止时间，也不是 Submit 或 Claim 网络请求的超时时间。
 
-时间戳统一采用 Unix 毫秒，execution_timeout、retry_delay 使用整数秒。
+时间戳统一采用 Unix 毫秒，execution_timeout_ms、retry_delay_ms 使用整数毫秒。
 
 不在 Redis 任务详情中设置 execution_deadline_at，也不在 Lua 中按执行时长强制拒绝操作。租约到期时间仅保存在 lease ZSET 的 score 中，不在任务详情中重复保存 lease_expires_at。重试到期时间 next_retry_at 仅作为 retry ZSET 的 score 保存，也不作为字段单独写入任务详情。
 
-Server 从 Claim 响应中取得 execution_timeout，完成本地登记后，在启动 handler 协程的同时建立时长为 execution_timeout 的本地定时器及取消 context。handler 返回与定时器到期竞争，Server 只选择一个结果处理分支。不统计或扣除 Claim 耗时，也不需要比较 Server 与 Redis 的墙上时钟来计算执行超时。
+Server 从 Claim 响应中取得 execution_timeout_ms，完成本地登记后，在启动 handler 协程的同时建立时长为 execution_timeout_ms 的本地定时器及取消 context。handler 返回与定时器到期竞争，Server 只选择一个结果处理分支。不统计或扣除 Claim 耗时，也不需要比较 Server 与 Redis 的墙上时钟来计算执行超时。
 
 本地定时器到期且 handler 尚未完成时：
 
@@ -130,7 +136,7 @@ Submit 校验类型标识的格式。除非另行设计统一的类型注册信�
 - task_id 已存在时，不再创建，按照第 8 节处理重复请求或内容冲突。
 - 已有任务处于任何状态，都不能被重复 Submit 重置或重新入队。
 - 当前执行身份和租约到期时间不作为新建 Submit 的输入；初版不设置取消标记。
-- execution_timeout 是允许提交的执行配置，Server 在成功领取后才据此控制本轮本地超时。
+- execution_timeout_ms 是允许提交的执行配置，Server 在成功领取后才据此控制本轮本地超时。
 - 初版不提供整个任务的总到期时间参数。
 
 ## 4. 成功后的变化与返回值
@@ -138,7 +144,7 @@ Submit 校验类型标识的格式。除非另行设计统一的类型注册信�
 ### 首次创建
 
 - 状态变化：无记录 → pending。
-- 保存 task_id、task_type、原始 payload、max_retry、规范化后的 execution_timeout、retry_delay 和创建时间到任务详情 Hash。
+- 保存 task_id、task_type、原始 payload、max_retry、规范化后的 execution_timeout_ms、retry_delay_ms、queue = default 和 created_at到任务详情 Hash。
 - 保存不可变的初始提交配置，供后续重复请求比较。
 - 不要求另建一张表或复制一份初始配置，只要后续操作不覆盖原始值即可。
 - 初始化 status = pending。
@@ -281,8 +287,9 @@ error == nil 时返回非空结果。
 - task_type。
 - 原始 payload。
 - max_retry。
-- 规范化后的 execution_timeout。
-- 规范化后的 retry_delay。
+- 规范化后的 execution_timeout_ms。
+- 规范化后的 retry_delay_ms。
+- 固定的 queue（default）。
 
 以下运行数据不参与比较：
 
@@ -295,13 +302,13 @@ error == nil 时返回非空结果。
 - 结果和错误。
 - 运行时间戳。
 
-execution_timeout、retry_delay 都是不可变初始配置；初版不保存 execution_deadline_at。
+execution_timeout_ms、retry_delay_ms 都是不可变初始配置；初版不保存 execution_deadline_at。
 
-同一 ID 下仅修改 execution_timeout 或 retry_delay，也必须返回内容冲突，不能覆盖原配置。
+同一 ID 下仅修改 execution_timeout_ms 或 retry_delay_ms，也必须返回内容冲突，不能覆盖原配置。
 
-当前 Submit 尚未开放 queue 参数，由平台路由到固定默认逻辑队列。
+第一版 Client 和 Server 只提交和处理 default 队列，不开放 queue 选项。queue 仍作为不可变字段保存并参与幂等比较；已有记录的 queue 不为 default 时返回冲突。
 
-以后增加队列等提交字段时，应同步定义默认值、输入校验与比较规则。
+以后开放队列选择等提交参数时，应同步定义默认值、输入校验与比较规则。
 
 ### payload 比较规则
 
@@ -374,14 +381,14 @@ Lua 正常执行成功并收到响应是运行时成功确认；Redis 的具体�
 | --- | --- | --- |
 | 首次合法提交 | 使用新 ID 提交合法请求 | 一条 pending 记录和一个 pending 项，返回 Created=true |
 | 参数错误 | 提交空 ID、空类型、负数 max_retry、非法 timeout 或超出配置上限的参数 | 返回参数错误，不创建或入队 |
-| timeout 默认值 | 省略 execution_timeout 提交后，使用同 ID 显式传入 60 | 保存有效值 60，第二次返回已有任务，不冲突、不重复入队 |
+| timeout 默认值 | 省略 execution_timeout_ms 提交后，使用同 ID 显式传入 60000 | 保存有效值 60000，第二次返回已有任务，不冲突、不重复入队 |
 | timeout 非法值 | 分别显式传入 0、负数、非整数或超过平台上限的值 | 参数错误，不创建、不入队 |
-| retry_delay 默认值 | 省略 retry_delay 提交，再以同 ID 显式传入 30 | 保存 30 秒，第二次识别为相同配置 |
-| retry_delay 边界 | 分别传入 14、15、0、负数、非整数和超过平台上限的值 | 15 合法；其余非法值不创建、不入队 |
-| retry_delay 冲突 | 先以 30 秒提交，再以同 ID 改为 45 秒 | 返回内容冲突，原配置保持 30 秒 |
-| timeout 开始计时 | 保存 timeout 后让任务等待，并人为延迟 Claim 响应，再启动 handler | 等待和领取耗时均不计入超时；从启动 handler 时计满 execution_timeout，不保存 Redis 执行截止字段 |
+| retry_delay_ms 默认值 | 省略 retry_delay_ms 提交，再以同 ID 显式传入 30000 | 保存 30000 毫秒，第二次识别为相同配置 |
+| retry_delay_ms 边界 | 分别传入 14999、15000、15001、0、负数、非整数和超过平台上限的值 | 15000 和 15001 合法；其余非法值不创建、不入队 |
+| retry_delay_ms 冲突 | 先以 30 秒提交，再以同 ID 改为 45 秒 | 返回内容冲突，原配置保持 30 秒 |
+| timeout 开始计时 | 保存 timeout 后让任务等待，并人为延迟 Claim 响应，再启动 handler | 等待和领取耗时均不计入超时；从启动 handler 时计满 execution_timeout_ms，不保存 Redis 执行截止字段 |
 | 同 ID、同配置重复 | 连续提交相同请求 | 第一次新建，之后返回已有任务，不重复入队 |
-| 同 ID、不同配置 | 分别改变 payload、task_type、max_retry、execution_timeout 或 retry_delay 再次提交 | 返回冲突，不修改已有记录 |
+| 同 ID、不同配置 | 分别改变 payload、task_type、max_retry、execution_timeout_ms 或 retry_delay_ms 再次提交 | 返回冲突，不修改已有记录 |
 | 不同 ID、同配置 | 使用两个 ID 提交相同任务内容 | 创建两个独立任务 |
 | 同 ID、同配置并发 | 无故障条件下并发提交 20 次 | 恰好一次 Created=true，其余 Created=false，只创建并入队一次 |
 | 同 ID、不同配置并发 | 同时提交两个不同配置 | 一个配置创建成功，另一个冲突 |
@@ -399,3 +406,12 @@ Lua 正常执行成功并收到响应是运行时成功确认；Redis 的具体�
 - 调用方观察到的返回结果。
 
 不能要求故障下必定有调用方收到新建成功响应。
+
+## 11. 实现约束与补充验收
+
+依据 [ADR-0001](adr/0001-submit-client-and-storage.md) 和 [Submit实施计划](Submit实施计划.md)。
+
+- Lua 新建分支在 HSET 前检查 pending 类型只能为 none 或 list；已有记录分支不要求 pending 存在或包含该 ID。
+- 循环比较六项配置，任一字段缺失返回 incomplete，优先于 conflict；空字符串不等于字段缺失。incomplete 映射为可识别的存储数据异常，不返回成功、不补字段或重新入队。
+- Redis 客户端由调用方配置和关闭，底层重试由调用方管理，平台不额外增加 Submit 重试循环；具体要求统一见 ADR-0001。底层重试可能在首次创建响应丢失后返回 Created=false。
+- 补充验收：省略 max_retry 与显式 0 等价；timeout=1500ms 合法，retry delay=15001ms 合法；非整数毫秒拒绝；nil payload 与空切片等价；缺失 payload 返回 incomplete；queue 缺失返回 incomplete、不同返回 conflict；pending 错误类型不创建 Hash；nil 选项报错，零个选项合法。

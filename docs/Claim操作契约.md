@@ -28,7 +28,7 @@ Claim 成功表示平台已原子授予执行权，不表示 handler 已经开�
 | 订阅队列及权重 | 执行实例配置 | 至少订阅一个合法逻辑队列，不从未订阅的队列领取 |
 | 租约时长、续租间隔 | 平台运行配置 | 均为正值，续租间隔小于租约时长并留出网络余量 |
 | `attempt_token` | 平台领取模块生成，原子绑定到候选任务 | 每轮成功授予执行权使用新的唯一值，不由业务提交方指定 |
-| `execution_timeout` | 读取任务在 Submit 时保存的配置 | 单次执行时长上限，不能在 Claim 时擅自覆盖 |
+| `execution_timeout_ms` | 读取任务在 Submit 时保存的配置 | 单次执行时长上限，不能在 Claim 时擅自覆盖 |
 
 attempt_token 可以在调用存储脚本前生成，再由脚本绑定到实际选中的任务，不要求 Lua 自己生成 UUID。
 
@@ -90,7 +90,7 @@ active 是执行中索引，lease 是租约到期索引，它们都不是任务�
 8. 建立初始租约并写入 lease 索引。
 9. 如保存 updated_at，则同步更新。
 
-时间戳统一为 Unix 毫秒，execution_timeout、retry_delay 为整数秒：
+时间戳统一为 Unix 毫秒，execution_timeout_ms、retry_delay_ms 为整数毫秒：
 
 ```text
 lease ZSET 的 member = task_id
@@ -99,7 +99,7 @@ lease ZSET 的 score = Redis 当前时间（毫秒）+ 租约时长（毫秒）
 
 last_claimed_at 和租约时间均在 Lua 中使用 Redis TIME 生成。lease ZSET 是租约到期时间的唯一来源，不将 score 重复写入任务详情。
 
-初始租约不按 execution_timeout 截断；单次执行超时由 Server 本地定时器控制，不由 Redis 保存或强制执行固定截止时间。
+初始租约不按 execution_timeout_ms 截断；单次执行超时由 Server 本地定时器控制，不由 Redis 保存或强制执行固定截止时间。
 
 Claim 不修改原始提交配置，不清空最近一次失败历史。
 
@@ -111,7 +111,7 @@ Claim 不修改原始提交配置，不清空最近一次失败历史。
 
 | 结果 | 返回内容 | 本地后续动作 |
 | --- | --- | --- |
-| 成功领取 | 任务内容、本轮执行身份及 execution_timeout | 登记到本地任务管理，启动 handler 时同时建立完整时长的本地超时定时器，并启动续租，执行槽转交任务执行流程 |
+| 成功领取 | 任务内容、本轮执行身份及 execution_timeout_ms | 登记到本地任务管理，启动 handler 时同时建立完整时长的本地超时定时器，并启动续租，执行槽转交任务执行流程 |
 | 暂无可领取任务 | 明确的空结果，例如 task=nil、error=nil | 释放执行槽，等待后续轮询 |
 | 参数、存储或一致性错误 | 可识别错误，不返回可执行任务 | 不启动 handler，释放本轮执行槽，按错误类型处理 |
 
@@ -124,14 +124,14 @@ Claim 不修改原始提交配置，不清空最近一次失败历史。
 - attempts。
 - owner_id。
 - attempt_token。
-- execution_timeout。
+- execution_timeout_ms。
 - last_claimed_at。
 
 读取任务内容可以包含在原子操作中，但网络响应送达不属于存储原子保证。
 
-Server 从成功响应取得 execution_timeout，完成本地登记后，在启动 handler 协程的同时建立时长为 execution_timeout 的本地定时器及取消 context。计时从启动 handler 开始，不从 Claim 请求发出、Redis 授予执行权或响应到达时提前开始。
+Server 从成功响应取得 execution_timeout_ms，完成本地登记后，在启动 handler 协程的同时建立时长为 execution_timeout_ms 的本地定时器及取消 context。计时从启动 handler 开始，不从 Claim 请求发出、Redis 授予执行权或响应到达时提前开始。
 
-Claim 请求、响应及 handler 启动前的准备耗时不计入 execution_timeout，不需要统计领取耗时或从执行时长中扣除。没有启动 handler 时，不存在本轮执行定时器已经耗尽的判断；若最终不启动 handler，可归还原领取槽，已授予的执行权仍按租约和尝试预算恢复。
+Claim 请求、响应及 handler 启动前的准备耗时不计入 execution_timeout_ms，不需要统计领取耗时或从执行时长中扣除。没有启动 handler 时，不存在本轮执行定时器已经耗尽的判断；若最终不启动 handler，可归还原领取槽，已授予的执行权仍按租约和尝试预算恢复。
 
 超时裁定与 handler 成功返回之间，本地只能选择一个结果处理分支。裁定超时后，停止续租、发出 context 取消并调用 ReportFailure，不再发起该轮 complete。上报未成功时，Redis 状态可能延迟到租约到期才由 Reclaim 推进。
 
@@ -172,7 +172,7 @@ Claim 请求、响应及 handler 启动前的准备耗时不计入 execution_tim
 - 0 ≤ attempts ≤ max_retry + 1。
 - 每次成功授予执行权，仅增加一次 attempts。
 - 未收到响应的任务不会因缺少本地信息而失去恢复路径。
-- execution_timeout 是不可变配置，续租不重置本地执行定时器。
+- execution_timeout_ms 是不可变配置，续租不重置本地执行定时器。
 - 不保存 execution_deadline_at；Redis 不提供按执行时长拒绝迟到上报的硬截止保证。
 - 终态统一为 completed、failed、canceled，终态任务不保留等待或执行索引及当前执行身份。
 
@@ -290,7 +290,7 @@ active 与 lease 同时包含任务属于正常情况。
 | running、租约已到期、还有尝试额度 | retry_wait |
 | 已经 canceled 或其他终态 | 不再迁移或重试；正常 Cancel 已移除 lease，残留项按一致性异常处理 |
 
-进入 retry_wait 时，读取任务 Hash 中不可变的 retry_delay（默认 30 秒，最小 15 秒），计算 next_retry_at = Redis 当前时间（毫秒）+ retry_delay × 1000，仅将该值写入 retry ZSET 的 score。next_retry_at 是重试到期时间的名称，不作为字段单独存入任务详情 Hash。
+进入 retry_wait 时，读取任务 Hash 中不可变的 retry_delay_ms（默认 30 秒，最小 15 秒），计算 next_retry_at = Redis 当前时间（毫秒）+ retry_delay_ms，仅将该值写入 retry ZSET 的 score。next_retry_at 是重试到期时间的名称，不作为字段单独存入任务详情 Hash。
 
 重试时间到达后，由 Reclaim 在 Lua 内原子移除 retry 成员、将状态修改为 pending 并加入 pending 一次。
 
@@ -337,8 +337,8 @@ attempt_token 保护平台状态，不能撤销邮件、扣款等外部副作用
 | 已领取实例崩溃     | 领取成功后结束实例进程                        | 回收后按剩余额度进入 retry_wait 或 failed，无遗留孤立 active 项                  |
 | 迟到上报        | 回收并重新领取后，用旧 token 续租或上报            | 明确拒绝，不修改新一轮状态、结果或租约                                        |
 | 多回收器竞争     | 两实例同时触发同一队列 Reclaim，各自在 Lua 内选候选和迁移 | 同轮只迁移一次，不重复加入 retry 或 pending，不撤销新一轮身份                 |
-| 本地超时        | handler 超过 execution_timeout 且 Server 正常调度 | 本地裁定超时、停止续租并 ReportFailure，不重置定时器；Redis 状态可能延迟收敛       |
-| 超时计时起点     | 人为增加 Claim 请求、响应和本地登记耗时，再启动 handler | 从启动 handler 时计满 execution_timeout，不扣除领取或准备耗时                  |
+| 本地超时        | handler 超过 execution_timeout_ms 且 Server 正常调度 | 本地裁定超时、停止续租并 ReportFailure，不重置定时器；Redis 状态可能延迟收敛       |
+| 超时计时起点     | 人为增加 Claim 请求、响应和本地登记耗时，再启动 handler | 从启动 handler 时计满 execution_timeout_ms，不扣除领取或准备耗时                  |
 | 超时上报失败     | 丢弃超时 ReportFailure 的请求或响应，耗尽重试 | 停止续租，到期回收；不假定 Redis 已经立即结束该轮                                  |
 | 取消登记窗口     | Cancel 通知先于本地登记到达并被忽略 | 记录为已知缺陷：handler 可能启动，但 Redis 不接受后续续租和结果                   |
 | 本地租约保护延期 | 模拟迟到 Claim 响应或持续续租网络错误 | 不把本地租约到期判断列为已实现；Redis 仍按状态、token、score 拒绝失效操作         |
@@ -348,3 +348,6 @@ attempt_token 保护平台状态，不能撤销邮件、扣款等外部副作用
 领取响应丢失与实例崩溃会消耗已经授予的尝试预算。
 
 因此，本契约不承诺 handler 最终一定被调用，更不承诺业务副作用恰好发生一次。
+
+
+第一版队列范围：Server 固定领取 default，任务 Hash 中 queue 必须为 default；不提供自定义队列或多队列调度。毫秒配置转换为本地 time.Duration 时须检查溢出。详见 [ADR-0001](adr/0001-submit-client-and-storage.md)。

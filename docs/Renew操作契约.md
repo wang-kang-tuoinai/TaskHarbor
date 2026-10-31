@@ -37,7 +37,7 @@ status 保持 running，Lua 设置：
     lease ZSET 的 member = task_id
     新 score = Redis 当前 Unix 毫秒 + lease_duration（毫秒）
 
-不改变 owner_id、attempt_token、attempts、原始 execution_timeout、retry_delay 或本地超时定时器。不在任务详情写入 lease_expires_at，不设置 execution_deadline_at。
+不改变 owner_id、attempt_token、attempts、原始 execution_timeout_ms、retry_delay_ms 或本地超时定时器。不在任务详情写入 lease_expires_at，不设置 execution_deadline_at。
 
 返回 applied、error，针对本次单任务操作：
 
@@ -57,8 +57,8 @@ status 保持 running，Lua 设置：
 - 仅当前有效执行身份可以续租。
 - 已到期租约不能复活；非 running 任务不能续租。
 - 续租不增加 attempts，不切换任务状态。
-- 续租不重置 Server 本地 execution_timeout。
-- 初版租约不按 execution_timeout 截断，Redis 不执行存储端硬截止时间检查。
+- 续租不重置 Server 本地 execution_timeout_ms。
+- 初版租约不按 execution_timeout_ms 截断，Redis 不执行存储端硬截止时间检查。
 
 ## 6. 失败及结果未知时的行为
 
@@ -67,7 +67,7 @@ status 保持 running，Lua 设置：
 - 执行槽只能在 handler 真正退出后归还一次，不能在发出取消信号或收到续租拒绝时提前归还。
 - 存储/网络错误或响应丢失：本次不立即重试，也不单凭该错误取消 handler 或归还槽；等待下一次续租定时器。
 - 下一次请求仍须重新检查当前状态、token、score，不承接上次可能存在的权限。
-- 本地 execution_timeout 到期时，仍按 Claim、ReportFailure 的规则停止续租并上报超时，不因等待下一次 Renew 而延长本地定时器。
+- 本地 execution_timeout_ms 到期时，仍按 Claim、ReportFailure 的规则停止续租并上报超时，不因等待下一次 Renew 而延长本地定时器。
 
 ## 7. 并发竞争规则
 

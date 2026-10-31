@@ -25,7 +25,7 @@ Server 在 handler 成功返回、且本地未将该轮裁定为超时或失去�
 
 不设置或读取取消标记，任务为 canceled 或其他非 running 状态时直接拒绝。
 
-execution_timeout 由 Server 本地控制。handler 成功和超时处理只选一个本地分支；裁定超时后不再发起 complete。Redis 不保存 execution_deadline_at，也不按执行时长额外拒绝成功上报。
+execution_timeout_ms 由 Server 本地控制。handler 成功和超时处理只选一个本地分支；裁定超时后不再发起 complete。Redis 不保存 execution_deadline_at，也不按执行时长额外拒绝成功上报。
 
 ## 4. 成功后的变化与返回值
 
@@ -96,7 +96,7 @@ applied 仅在 error 为 nil 时有确定含义。收到拒绝不等于 handler 
 - Redis 自身故障的持久性依赖部署配置，不能由 Lua 推导无条件不丢结果。
 - Lua 运行时错误可能保留此前写入；初版不自动检测、对账或修复部分写入状态。只有仍满足完整 running、active、lease 关系的任务，才能依赖正常回收流程。
 - 初版没有本地租约有效期维护；网络异常时旧 handler 可能继续运行，Redis 仍通过状态、token 和 score 拒绝失效上报。
-- Redis 不按 execution_timeout 强制拒绝所有迟到成功，本地暂停、处理延迟和在途请求的限制与 Submit、Claim 一致。
+- Redis 不按 execution_timeout_ms 强制拒绝所有迟到成功，本地暂停、处理延迟和在途请求的限制与 Submit、Claim 一致。
 
 ## 10. 验收场景
 
