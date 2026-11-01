@@ -1,6 +1,6 @@
 # Client Submit 实施计划
 
-状态：待实施。本文只规定后续工作，不表示代码或测试已完成。
+状态：Client Submit 已于 2026-10-31 实现并验证。本文保留实施要求；实际完成内容、测试命令及验证边界见[当前进度](当前进度.md)。Claim、Renew 未在本次实施。
 
 依据：[ADR-0001](adr/0001-submit-client-and-storage.md)、[Submit 契约](Submit操作契约.md)。顺序保持 Submit → Claim → Renew。
 
@@ -13,7 +13,7 @@
 - max_retry 默认 0；拒绝负数，须保证 max_retry + 1 在 Go 和 Lua 中可安全表示。
 - execution_timeout_ms 默认 60000，最小 1；retry_delay_ms 默认 30000，最小 15000。time.Duration 必须整除 time.Millisecond，拒绝小数毫秒，不截断。
 - 不开放 queue 选项，统一使用 default。每次创建独立配置，依次应用选项后校验；拒绝 nil 选项元素。
-- 已确认：task_type 为 1～128 字节，只允许 ASCII 字母、数字、下划线、连字符、点和冒号，大小写敏感；execution_timeout_ms 最大 86400000（24 小时），retry_delay_ms 最大 604800000（7 天），均包含上限。待确认项为 max_retry 的具体上限和 Redis 支持版本。
+- 已确认：task_type 为 1～128 字节，只允许 ASCII 字母、数字、下划线、连字符、点和冒号，大小写敏感；execution_timeout_ms 最大 86400000（24 小时），retry_delay_ms 最大 604800000（7 天），均包含上限。实施时进一步确认 max_retry 上限为 2147483646，保证 max_retry + 1 在 32/64 位 Go int 和 Lua 中均可精确表示；先验证本机 Redis 5.0.14.1，其他版本兼容性及统一支持版本范围待定。
 
 ## 2. 文件与依赖方向
 

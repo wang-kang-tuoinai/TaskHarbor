@@ -69,3 +69,17 @@
 3. 尚未解决的问题、已知风险或未验证的部分。
 
 只报告实际完成的工作，不夸大实现效果或测试结论。
+
+## Agent skills
+
+### Issue tracker
+
+开发任务使用 GitHub Issues 跟踪。读取、创建或更新任务前，先阅读 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+任务分诊使用五个标准角色；具体映射见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+采用单一领域上下文。分析领域、制定方案或实施变更前，按 `docs/agents/domain.md` 阅读相关文档。

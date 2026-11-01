@@ -35,7 +35,7 @@ max_retry 省略时规范化为 0，与显式 0 等价；保存并比较最终�
 
 Go API 使用 time.Duration，允许整数毫秒输入，例如 1500ms；非整数毫秒必须拒绝，不得截断。payload 最大 1 MiB（1048576 字节），nil 与空切片统一为空字节，不要求 JSON。task_id 不自动裁剪或改写。
 
-已确认：task_type 长度为 1～128 字节，只允许 ASCII 字母、数字、下划线、连字符、点和冒号，大小写敏感，不自动裁剪或改写。execution_timeout_ms 上限为 86400000（24 小时），retry_delay_ms 上限为 604800000（7 天），均包含上限。max_retry 的具体上限与 Redis 支持版本仍待确定。
+已确认：task_type 长度为 1～128 字节，只允许 ASCII 字母、数字、下划线、连字符、点和冒号，大小写敏感，不自动裁剪或改写。execution_timeout_ms 上限为 86400000（24 小时），retry_delay_ms 上限为 604800000（7 天），均包含上限。max_retry 上限为 2147483646，保证 max_retry + 1 在 32/64 位 Go int 和 Lua 中均可精确表示。先验证本机 Redis 5.0.14.1，其他版本兼容性及统一支持版本范围待定。
 
 字段名统一为 `execution_timeout_ms`。
 
@@ -188,6 +188,15 @@ func Submit(
 | 提交结果无法确认 | 无确定结果 | 可识别的超时、连接错误或结果未知错误 |
 
 error == nil 时返回非空结果。
+
+Go Client 接口按 ADR-0001 实现为：
+
+```go
+func NewClient(rdb *redis.Client) (*Client, error)
+func (c *Client) Submit(ctx context.Context, taskID, taskType string, payload []byte, opts ...SubmitOption) (*SubmitResult, error)
+```
+
+提交选项为 `WithSubmitMaxRetry`、`WithSubmitExecutionTimeout` 和 `WithSubmitRetryDelay`。公开错误可用 `errors.Is` 识别：`ErrInvalidArgument`（参数非法）、`ErrTaskIDConflict`（ID 内容冲突）、`ErrStorageData`（初始配置缺失或响应不符合协议）。Redis 与网络错误保留底层错误链；`redis.Nil` 也作为错误返回，不表示任务不存在。调用方负责 Redis 客户端的配置和关闭。
 
 成功结果不携带“任务一定仍在 pending”的承诺，因为执行端可能在响应返回前已经领取甚至完成任务。
 
