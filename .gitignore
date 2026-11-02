@@ -22,3 +22,6 @@ coverage.out
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 本地草稿与临时文件
+.scratch/
