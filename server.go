@@ -74,7 +74,7 @@ type Server interface {
 }
 
 // server 是 Server 的内部实现，必须通过 NewServer 构造，且不得被复制。
-// 执行生命周期尚未实现。
+// 已有单轮本地执行监督，Start 与完整退出生命周期尚未实现。
 type server struct {
 	redisClient     *redis.Client
 	slots           chan struct{}
@@ -89,6 +89,11 @@ type server struct {
 
 	executionsMu sync.RWMutex
 	executions   map[executionKey]*execution
+	abort        chan struct{} // 由未来唯一的生命周期管理方关闭；当前没有公开退出入口。
+
+	// 构造时绑定内部上报占位；测试可在启动执行前替换，观察分支而非伪造存储结果。
+	onComplete func(executionKey, []byte)
+	onFailure  func(executionKey, error)
 }
 
 // beginStart 在任何订阅或 Claim 之前封存注册。后续的启动代码必须首先调用
@@ -231,7 +236,7 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	if cfg.renewInterval > cfg.leaseDuration/3 {
 		return nil, fmt.Errorf("renew interval must be <= lease duration / 3: renewInterval=%v, leaseDuration/3=%v", cfg.renewInterval, cfg.leaseDuration/3)
 	}
-	return &server{
+	s := &server{
 		redisClient:     rdb,
 		slots:           make(chan struct{}, cfg.concurrency),
 		leaseDuration:   cfg.leaseDuration,
@@ -240,7 +245,11 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		status:          serverCreated,
 		handlers:        make(map[string]HandlerFunc),
 		executions:      make(map[executionKey]*execution),
-	}, nil
+		abort:           make(chan struct{}),
+	}
+	s.onComplete = s.complete
+	s.onFailure = s.reportFailure
+	return s, nil
 }
 
 func (s *server) HandleFunc(taskType string, fn HandlerFunc) error {
