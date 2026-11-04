@@ -71,10 +71,14 @@ type Server interface {
 	// HandleFunc 在启动开始前注册任务类型。重复注册会返回错误，
 	// 并保留原有的 handler。
 	HandleFunc(taskType string, fn HandlerFunc) error
+	// Start 封存注册并启动后台领取，非阻塞返回；对象不能重复启动。
+	Start() error
+	// Errors 供单个调用方接收致命领取错误；通知不表示已有任务或整个服务已退出。
+	Errors() <-chan error
 }
 
 // server 是 Server 的内部实现，必须通过 NewServer 构造，且不得被复制。
-// 已有单轮本地执行监督，Start 与完整退出生命周期尚未实现。
+// 已接通最小 Start 与单轮本地执行监督，完整退出生命周期尚未实现。
 type server struct {
 	redisClient     *redis.Client
 	slots           chan struct{}
@@ -94,6 +98,12 @@ type server struct {
 	// 构造时绑定内部上报占位；测试可在启动执行前替换，观察分支而非伪造存储结果。
 	onComplete func(executionKey, []byte)
 	onFailure  func(executionKey, error)
+
+	claimCtx        context.Context
+	cancelClaim     context.CancelFunc // 当前仅供包内测试清理领取循环，不取消已有 Handler。
+	claimDone       chan struct{}
+	errors          chan error
+	newAttemptToken func() (string, error) // 独立的随机性接缝；测试在 Start 前替换。
 }
 
 // beginStart 在任何订阅或 Claim 之前封存注册。后续的启动代码必须首先调用
@@ -219,10 +229,14 @@ func WithReclaimInterval(d time.Duration) Option {
 }
 
 // NewServer 只构造本地状态，不发起 Redis 请求或启动 goroutine。
-// 调用方拥有 rdb，并负责关闭它。
+// 调用方须以 MaxRetries=-1 创建 rdb，并负责关闭它；平台不修改共享配置。
 func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	if rdb == nil {
 		return nil, errors.New("rdb is required")
+	}
+	// go-redis 将构造参数 -1 规范化为有效值 0；Claim 不能透明重试结果未知的请求。
+	if rdb.Options().MaxRetries != 0 {
+		return nil, errors.New("Redis automatic retries must be disabled: construct client with MaxRetries=-1")
 	}
 	cfg := defaultServerConfig()
 	for _, opt := range opts {
@@ -236,6 +250,7 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	if cfg.renewInterval > cfg.leaseDuration/3 {
 		return nil, fmt.Errorf("renew interval must be <= lease duration / 3: renewInterval=%v, leaseDuration/3=%v", cfg.renewInterval, cfg.leaseDuration/3)
 	}
+	claimCtx, cancelClaim := context.WithCancel(context.Background())
 	s := &server{
 		redisClient:     rdb,
 		slots:           make(chan struct{}, cfg.concurrency),
@@ -246,6 +261,11 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		handlers:        make(map[string]HandlerFunc),
 		executions:      make(map[executionKey]*execution),
 		abort:           make(chan struct{}),
+		claimCtx:        claimCtx,
+		cancelClaim:     cancelClaim,
+		claimDone:       make(chan struct{}),
+		errors:          make(chan error, 1),
+		newAttemptToken: newAttemptToken,
 	}
 	s.onComplete = s.complete
 	s.onFailure = s.reportFailure
