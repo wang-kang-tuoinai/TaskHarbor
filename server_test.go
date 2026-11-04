@@ -16,7 +16,7 @@ import (
 
 func newTestServer(t *testing.T, opts ...Option) *server {
 	t.Helper()
-	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 	s, err := NewServer(rdb, opts...)
 	if err != nil {
