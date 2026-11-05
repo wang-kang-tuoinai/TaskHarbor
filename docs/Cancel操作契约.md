@@ -62,6 +62,8 @@ Redis 取消生效，不以 Server 是否收到通知或 handler 是否退出为
 - 通知只是尽力加速本地停止，Redis 状态才是权威结果。
 - Server 处理匹配本地 task_id、attempt_token 的通知后，停止续租并发出 context 取消。执行槽必须等 handler 真正退出才归还，且只归还一次。
 
+本地取消原因应表达已生效的主动取消，监督结束且不调用 complete 或 ReportFailure。Handler 因取消返回错误不构成新的业务失败；结果与取消同时就绪时也须检查已知取消原因。在途上报由 Redis 拒绝；仅发起 Cancel 请求或收到网络错误不证明取消生效。具体监督竞争边界见 [Renew 契约](Renew操作契约.md)第 6.2 节，本轮 Renew 开发不包含 Cancel 实现。
+
 ## 6. 失败及结果未知时的行为
 
 - 参数非法：返回参数错误，不修改。

@@ -6,6 +6,9 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 | --- | --- | --- |
 | [0001](0001-submit-client-and-storage.md) | Client Submit 接口与 Redis 存储边界 | 已接受 |
 | [0002](0002-claim-failure-and-retry-policy.md) | Claim 的重试边界与异常处理 | 已接受 |
-| [0003](0003-execution-supervision-and-lifecycle.md) | 执行监督、资源归属与分阶段生命周期 | 已接受 |
+| [0003](0003-execution-supervision-and-lifecycle.md) | 执行监督、资源归属与分阶段生命周期 | 已接受；执行表与 Errors 定义由 0004 部分替代 |
+| [0004](0004-renew-failure-and-eligibility.md) | 续租资格与续租故障的影响范围 | 已接受 |
 
 0002、0003 补充已讨论的 Server 设计，不替代 0001。0003 区分本轮实施边界与已确认但延期实现的退出、续租语义；“已接受”不表示代码已经实现。
+
+0004 部分替代 0003 的执行表语义和错误通知定义，并确定 Renew 故障范围；其余历史决策继续有效。调度参数与验收细则见 Renew 操作契约。
