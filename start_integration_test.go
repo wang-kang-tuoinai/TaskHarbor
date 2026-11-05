@@ -45,11 +45,17 @@ func integrationServer(t *testing.T, rdb *redis.Client, opts ...Option) *server 
 	}
 	s := public.(*server)
 	t.Cleanup(func() {
+		s.cancelRenew()
 		s.mu.Lock()
 		started := s.ownerID != ""
 		s.mu.Unlock()
 		if started {
 			stopStartLoop(t, s)
+			select {
+			case <-s.renewDone:
+			case <-time.After(3 * time.Second):
+				t.Error("renew loop did not stop during cleanup")
+			}
 		} else {
 			s.cancelClaim()
 		}
@@ -153,7 +159,7 @@ func TestStartRedisLostClaimReply(t *testing.T) {
 	var armed, dropped atomic.Bool
 	expected := []byte("*6\r\n$5\r\nfirst\r\n$3\r\njob\r\n$0\r\n\r\n$7\r\ndefault\r\n$1\r\n1\r\n$5\r\n60000\r\n")
 	rdb := redis.NewClient(&redis.Options{
-		Addr: admin.Options().Addr, MaxRetries: -1, PoolSize: 1, ReadTimeout: time.Second, WriteTimeout: time.Second,
+		Addr: admin.Options().Addr, MaxRetries: -1, ContextTimeoutEnabled: true, PoolSize: 1, ReadTimeout: time.Second, WriteTimeout: time.Second,
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, addr)
 			if err != nil {

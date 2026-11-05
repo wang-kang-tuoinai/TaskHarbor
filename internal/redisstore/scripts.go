@@ -15,3 +15,8 @@ var submitScript = redis.NewScript(submitSource)
 var claimSource string
 
 var claimScript = redis.NewScript(claimSource)
+
+//go:embed scripts/renew_task.lua
+var renewSource string
+
+var renewScript = redis.NewScript(renewSource)

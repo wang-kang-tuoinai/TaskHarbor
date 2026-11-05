@@ -50,7 +50,7 @@ func startSubmitRedis(t *testing.T) *redis.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	rdb := redis.NewClient(&redis.Options{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), MaxRetries: -1, DialTimeout: 100 * time.Millisecond, ReadTimeout: time.Second, WriteTimeout: time.Second})
+	rdb := redis.NewClient(&redis.Options{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), MaxRetries: -1, ContextTimeoutEnabled: true, DialTimeout: 100 * time.Millisecond, ReadTimeout: time.Second, WriteTimeout: time.Second})
 	t.Cleanup(func() { _ = rdb.Close() })
 	deadline := time.Now().Add(5 * time.Second)
 	for {

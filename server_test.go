@@ -16,7 +16,7 @@ import (
 
 func newTestServer(t *testing.T, opts ...Option) *server {
 	t.Helper()
-	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1})
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { _ = rdb.Close() })
 	s, err := NewServer(rdb, opts...)
 	if err != nil {
@@ -131,8 +131,8 @@ func TestConcurrentStartupAndRegistration(t *testing.T) {
 
 func TestExecutionAttemptsAndSnapshots(t *testing.T) {
 	s := newTestServer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	e := &execution{executionTimeout: time.Second, cancel: cancel}
 	oldKey := executionKey{taskID: "task", attemptToken: "old"}
 	newKey := executionKey{taskID: "task", attemptToken: "new"}
@@ -159,14 +159,14 @@ func TestExecutionAttemptsAndSnapshots(t *testing.T) {
 	}
 	// A callback may access the table: cancellation must occur outside its lock.
 	callbackKey := executionKey{taskID: "callback", attemptToken: "token"}
-	if err := s.addExecution(callbackKey, &execution{executionTimeout: time.Second, cancel: func() {
+	if err := s.addExecution(callbackKey, &execution{executionTimeout: time.Second, cancel: func(error) {
 		s.deleteExecution(callbackKey)
-		cancel()
+		cancel(nil)
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, record := range s.snapshotExecutions() {
-		record.cancel()
+		record.cancel(nil)
 	}
 	if ctx.Err() == nil {
 		t.Fatal("cancel not invoked")
@@ -182,7 +182,7 @@ func TestConcurrentExecutionTable(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				key := executionKey{taskID: "shared-task", attemptToken: fmt.Sprintf("%d-%d", i, j)}
-				e := &execution{executionTimeout: time.Second, cancel: func() {}}
+				e := &execution{executionTimeout: time.Second, cancel: func(error) {}}
 				if err := s.addExecution(key, e); err != nil {
 					t.Error(err)
 					return

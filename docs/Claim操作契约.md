@@ -46,6 +46,8 @@ Claim 调用方不指定目标 task_id，任务由平台从可领取队列中选
 
 Server 使用调用方提供且禁用自动重试的 Redis 客户端。调用方构造客户端时设置 MaxRetries=-1；NewServer 检查当前 go-redis 初始化后的有效配置为 0，拒绝开启重试的配置。不修改共享客户端、不内部新建连接池。
 
+2026-11-05 补充：Server 客户端还须由调用方显式启用 ContextTimeoutEnabled=true，以满足 Renew 的真实网络截止时间要求；NewServer 检查而不修改配置。配置示例见 [Renew 契约](Renew操作契约.md)，决策见 [ADR-0005](adr/0005-renew-client-deadlines.md)。此补充不改变 Claim 的重试边界。
+
 ## 3. 执行前置条件
 
 ### 本地领取条件

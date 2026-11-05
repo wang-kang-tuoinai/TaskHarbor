@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -59,10 +60,12 @@ type executionKey struct {
 	attemptToken string
 }
 
-// execution 的字段在构造后不可变。请在表锁之外调用 cancel。
+// execution 保存续租资格，不证明租约有效或 Renew 正在运行；除原子禁止标记外字段不可变。
+// 请在表锁之外调用 cancel。
 type execution struct {
 	executionTimeout time.Duration
-	cancel           context.CancelFunc
+	cancel           context.CancelCauseFunc
+	reportForbidden  atomic.Bool // 超时为首个取消原因时，后来已知失权仍须禁止新上报。
 }
 
 // Server 是任务平台对外暴露的执行服务接口。内部实现类型未导出，
@@ -71,9 +74,10 @@ type Server interface {
 	// HandleFunc 在启动开始前注册任务类型。重复注册会返回错误，
 	// 并保留原有的 handler。
 	HandleFunc(taskType string, fn HandlerFunc) error
-	// Start 封存注册并启动后台领取，非阻塞返回；对象不能重复启动。
+	// Start 封存注册并启动独立领取、续租循环，非阻塞返回；对象不能重复启动。
 	Start() error
-	// Errors 供单个调用方接收致命领取错误；通知不表示已有任务或整个服务已退出。
+	// Errors 供单个调用方接收 Claim/Renew 首个导致停止领取的后台致命错误。
+	// channel 不关闭来表达退出，收到通知不表示已有任务或整个服务已退出。
 	Errors() <-chan error
 }
 
@@ -81,6 +85,7 @@ type Server interface {
 // 已接通最小 Start 与单轮本地执行监督，完整退出生命周期尚未实现。
 type server struct {
 	redisClient     *redis.Client
+	renewClient     *redis.Client // WithTimeout 包装共享调用方连接池，不得 Close。
 	slots           chan struct{}
 	leaseDuration   time.Duration // Claim/Renew 的有效期从 Redis 当前时间起算。
 	renewInterval   time.Duration
@@ -100,9 +105,13 @@ type server struct {
 	onFailure  func(executionKey, error)
 
 	claimCtx        context.Context
-	cancelClaim     context.CancelFunc // 当前仅供包内测试清理领取循环，不取消已有 Handler。
+	cancelClaim     context.CancelFunc // 停止新领取，独立于 Renew 和已有 Handler。
 	claimDone       chan struct{}
 	errors          chan error
+	fatalOnce       sync.Once
+	renewCtx        context.Context
+	cancelRenew     context.CancelFunc
+	renewDone       chan struct{}
 	newAttemptToken func() (string, error) // 独立的随机性接缝；测试在 Start 前替换。
 }
 
@@ -230,6 +239,7 @@ func WithReclaimInterval(d time.Duration) Option {
 
 // NewServer 只构造本地状态，不发起 Redis 请求或启动 goroutine。
 // 调用方须以 MaxRetries=-1 创建 rdb，并负责关闭它；平台不修改共享配置。
+// ContextTimeoutEnabled 必须为 true，使 Renew 的请求截止时间约束实际网络等待。
 func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	if rdb == nil {
 		return nil, errors.New("rdb is required")
@@ -237,6 +247,9 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	// go-redis 将构造参数 -1 规范化为有效值 0；Claim 不能透明重试结果未知的请求。
 	if rdb.Options().MaxRetries != 0 {
 		return nil, errors.New("Redis automatic retries must be disabled: construct client with MaxRetries=-1")
+	}
+	if !rdb.Options().ContextTimeoutEnabled {
+		return nil, errors.New("Redis ContextTimeoutEnabled must be true for bounded Renew requests")
 	}
 	cfg := defaultServerConfig()
 	for _, opt := range opts {
@@ -251,8 +264,18 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		return nil, fmt.Errorf("renew interval must be <= lease duration / 3: renewInterval=%v, leaseDuration/3=%v", cfg.renewInterval, cfg.leaseDuration/3)
 	}
 	claimCtx, cancelClaim := context.WithCancel(context.Background())
+	renewCtx, cancelRenew := context.WithCancel(context.Background())
+	// WithTimeout 只复制客户端配置、共享原池。取最短正 I/O 预算，既启用负数超时
+	// 配置下的 socket deadline，也不会延长调用方已有的更短超时。
+	ioTimeout := cfg.renewInterval
+	for _, limit := range []time.Duration{rdb.Options().ReadTimeout, rdb.Options().WriteTimeout} {
+		if limit > 0 && limit < ioTimeout {
+			ioTimeout = limit
+		}
+	}
 	s := &server{
 		redisClient:     rdb,
+		renewClient:     rdb.WithTimeout(ioTimeout),
 		slots:           make(chan struct{}, cfg.concurrency),
 		leaseDuration:   cfg.leaseDuration,
 		renewInterval:   cfg.renewInterval,
@@ -264,6 +287,9 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		claimCtx:        claimCtx,
 		cancelClaim:     cancelClaim,
 		claimDone:       make(chan struct{}),
+		renewCtx:        renewCtx,
+		cancelRenew:     cancelRenew,
+		renewDone:       make(chan struct{}),
 		errors:          make(chan error, 1),
 		newAttemptToken: newAttemptToken,
 	}
