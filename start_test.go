@@ -16,7 +16,7 @@ import (
 
 func TestNewServerRequiresDisabledRedisRetries(t *testing.T) {
 	for _, retries := range []int{0, 1, -2, -1} {
-		rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: retries})
+		rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: retries, ContextTimeoutEnabled: true})
 		t.Cleanup(func() { _ = rdb.Close() })
 		commands := 0
 		rdb.AddHook(submitHook{process: func(context.Context, redis.Cmder) error {
@@ -45,15 +45,25 @@ func (e startRedisError) RedisError()   {}
 
 func newStartServer(t *testing.T, process func(context.Context, redis.Cmder) error, opts ...Option) *server {
 	t.Helper()
-	s := newTestServer(t, opts...)
-	s.redisClient.AddHook(submitHook{process: process})
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true})
+	t.Cleanup(func() { _ = rdb.Close() })
+	rdb.AddHook(submitHook{process: process})
+	public, err := NewServer(rdb, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := public.(*server)
+	// 当前 go-redis 的 WithTimeout 共享池但不复制命令 Hook；两个测试调用处分别安装。
+	s.renewClient.AddHook(submitHook{process: process})
 	t.Cleanup(func() {
 		s.cancelClaim()
+		s.cancelRenew()
 		s.mu.Lock()
 		started := s.ownerID != ""
 		s.mu.Unlock()
 		if started {
 			<-s.claimDone
+			<-s.renewDone
 		}
 		close(s.abort)
 	})

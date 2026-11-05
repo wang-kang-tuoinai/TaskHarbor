@@ -2,9 +2,21 @@ package taskq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
+
+var (
+	errExecutionLost         = errors.New("execution authority lost")
+	errExecutionCanceled     = errors.New("execution cancellation confirmed")
+	errExecutionInconsistent = errors.New("execution data inconsistent")
+)
+
+func reportingForbidden(ctx context.Context) bool {
+	cause := context.Cause(ctx)
+	return errors.Is(cause, errExecutionLost) || errors.Is(cause, errExecutionCanceled) || errors.Is(cause, errExecutionInconsistent)
+}
 
 type executionResult struct {
 	result []byte
@@ -15,10 +27,12 @@ type executionResult struct {
 // task 必须非 nil；接收后调用方不再访问它，Handler 对业务视图的修改不改变 key。
 // 无论接收是否成功，该槽均交由此路径管理。done 仅表示监督结束，不表示 Handler 已退出。
 // 此处不接入 Redis Claim，不改变任务状态或尝试预算。
-func (s *server) acceptExecution(task *Task, key executionKey, timeout time.Duration) (<-chan struct{}, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := s.addExecution(key, &execution{executionTimeout: timeout, cancel: cancel}); err != nil {
-		cancel()
+// parent 属于本轮任务，不能使用领取循环的取消 context。
+func (s *server) acceptExecution(parent context.Context, task *Task, key executionKey, timeout time.Duration) (<-chan struct{}, error) {
+	ctx, cancel := context.WithCancelCause(parent)
+	record := &execution{executionTimeout: timeout, cancel: cancel}
+	if err := s.addExecution(key, record); err != nil {
+		cancel(nil)
 		<-s.slots
 		return nil, err
 	}
@@ -28,12 +42,20 @@ func (s *server) acceptExecution(task *Task, key executionKey, timeout time.Dura
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		if record.reportForbidden.Load() || reportingForbidden(ctx) {
+			s.deleteExecution(key)
+			cancel(nil)
+			<-s.slots
+			return
+		}
 		if handler == nil {
 			// 未启动 Handler 时，槽仍由接收/监督路径归还，不创建虚假的执行协程。
 			<-s.slots
-			s.onFailure(key, fmt.Errorf("no handler registered for task type %q", task.Type))
+			if !record.reportForbidden.Load() && !reportingForbidden(ctx) {
+				s.onFailure(key, fmt.Errorf("no handler registered for task type %q", task.Type))
+			}
 			s.deleteExecution(key)
-			cancel()
+			cancel(nil)
 			return
 		}
 		// Handler 只发送一次；监督先退出后，这一个缓冲仍能接纳迟到结果。
@@ -56,22 +78,29 @@ func (s *server) acceptExecution(task *Task, key executionKey, timeout time.Dura
 		}()
 		select {
 		case result := <-results:
-			if result.err == nil {
-				s.onComplete(key, result.result)
-			} else {
-				s.onFailure(key, result.err)
+			// select 可在取消已知时选中结果；开始上报前必须再次检查原因，不能查表代替。
+			if !record.reportForbidden.Load() && !reportingForbidden(ctx) {
+				if result.err == nil {
+					s.onComplete(key, result.result)
+				} else {
+					s.onFailure(key, result.err)
+				}
 			}
 			s.deleteExecution(key)
-			cancel()
+			cancel(nil)
 		case <-timer.C:
 			// 先移出未来的续租集合并取消，再处理超时；迟到结果只留在缓冲 channel。
 			s.deleteExecution(key)
-			cancel()
-			s.onFailure(key, context.DeadlineExceeded)
+			cancel(context.DeadlineExceeded)
+			if !record.reportForbidden.Load() && !reportingForbidden(ctx) {
+				s.onFailure(key, context.DeadlineExceeded)
+			}
+		case <-ctx.Done():
+			s.deleteExecution(key)
 		case <-s.abort:
 			// abort 只撤销本地管理，不等同于已确认的业务失败。
 			s.deleteExecution(key)
-			cancel()
+			cancel(context.Canceled)
 		}
 	}()
 	return done, nil

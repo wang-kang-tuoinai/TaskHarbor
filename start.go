@@ -27,6 +27,7 @@ func (s *server) Start() error {
 	s.status = serverRunning
 	s.mu.Unlock()
 	go s.claimLoop()
+	go s.renewLoop()
 	return nil
 }
 
@@ -48,7 +49,7 @@ func (s *server) claimLoop() {
 		token, err := s.newAttemptToken()
 		if err != nil {
 			<-s.slots
-			s.errors <- fmt.Errorf("generate claim attempt token: %w", err)
+			s.reportFatal(fmt.Errorf("generate claim attempt token: %w", err))
 			return
 		}
 		claimed, err := redisstore.Claim(s.claimCtx, s.redisClient, redisstore.ClaimParams{
@@ -59,15 +60,14 @@ func (s *server) claimLoop() {
 			if s.claimCtx.Err() != nil {
 				return
 			}
-			if transientClaimError(err) {
+			if transientRedisError(err) {
 				if !waitClaim(s.claimCtx, backoff) {
 					return
 				}
 				backoff = min(backoff*2, claimBackoffMax)
 				continue
 			}
-			// 循环最多报告一次致命错误，容量为 1 的通知不依赖调用方及时接收。
-			s.errors <- err
+			s.reportFatal(err)
 			return
 		}
 		backoff = claimBackoffInitial
@@ -80,17 +80,23 @@ func (s *server) claimLoop() {
 		}
 		// 响应已限制执行时长在 24 小时内，转换为 time.Duration 不会溢出。
 		// acceptExecution 接管槽，包括它自身拒绝登记的情况，循环不能再次归还。
-		_, err = s.acceptExecution(&Task{
+		_, err = s.acceptExecution(context.Background(), &Task{
 			ID: claimed.TaskID, Type: claimed.TaskType, Payload: claimed.Payload, Attempts: claimed.Attempts,
 		}, executionKey{taskID: claimed.TaskID, attemptToken: token}, time.Duration(claimed.ExecutionTimeoutMS)*time.Millisecond)
 		if err != nil {
-			s.errors <- fmt.Errorf("accept claimed task %q: %w", claimed.TaskID, err)
+			s.reportFatal(fmt.Errorf("accept claimed task %q: %w", claimed.TaskID, err))
 			return
 		}
 	}
 }
 
-func transientClaimError(err error) bool {
+func (s *server) reportFatal(err error) {
+	// 故障处理不能放入 Once：后续 Renew 故障即使不通知，也仍须停用对应循环。
+	s.cancelClaim()
+	s.fatalOnce.Do(func() { s.errors <- err })
+}
+
+func transientRedisError(err error) bool {
 	var redisErr redis.Error
 	if errors.As(err, &redisErr) {
 		return false

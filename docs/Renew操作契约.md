@@ -21,6 +21,26 @@ executions 表保存本地具备续租资格的执行尝试，不证明当前租
 - 不传入 Server 的绝对到期时间戳；Lua 使用 Redis TIME 计算。
 - 时长换算和时间相加应检查溢出。
 
+### 客户端前置条件与配置示例
+
+2026-11-05 补充确认，依据 [ADR-0005](adr/0005-renew-client-deadlines.md)：调用方显式设置 MaxRetries=-1、ContextTimeoutEnabled=true。NewServer 拒绝未满足前置条件的客户端，不修改共享配置，不新增或接管连接池。
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:                  "127.0.0.1:6379",
+    MaxRetries:            -1,
+    ContextTimeoutEnabled: true,
+})
+// 调用方负责 rdb 的生命周期；当前 Server 尚无公开 Shutdown。
+server, err := taskq.NewServer(rdb)
+if err != nil {
+    return err
+}
+// 注册所需 Handler 后调用 server.Start()。
+```
+
+Renew 使用共享原池的 WithTimeout 包装，读写预算取 renewInterval 与原客户端正值 ReadTimeout、WriteTimeout 的最小值，以保留更短超时并启用 socket deadline；不关闭包装。单次请求再使用独立 context 截止时间，约束实际网络等待，允许正常调度误差，不承诺函数严格按墙钟期限返回。当前 go-redis 包装不复制命令 Hook；这不影响原池和 Dialer 的复用，不能据此修改依赖或共享配置。
+
 ## 3. 执行前置条件
 
 在同一 Lua 内按当前状态和身份判断是否需要检查执行索引；写入前完成必要的参数、字段、类型与数值校验：
@@ -95,7 +115,7 @@ status 保持 running，Lua 设置：
 
 - Start 启动独立 Renew 循环，不绑定 Claim 的取消 context；停止领取不能连带停止健康任务续租。
 - 按 renewInterval 固定周期取快照，锁外串行请求；空集合不请求 Redis，不持有执行表锁等待网络或调用取消函数。
-- 每个请求具有独立超时，上限取 renewInterval；底层客户端更短的超时可提前生效，不修改共享客户端配置。请求等待必须受该边界约束，不能只设置一个底层不遵守的 context 截止时间。
+- 每个请求具有独立超时，上限取 renewInterval；底层客户端更短的超时可提前生效。按第 2 节的显式客户端前置条件和共享池包装使网络 deadline 生效，不修改共享配置；允许正常调度误差，不承诺严格墙钟返回时间。
 - 一轮扫描未结束时不启动下一轮，错过的周期不逐个补跑。网络错误继续扫描其他任务，不在本轮立即重试该任务；保留禁用透明重试的客户端前置条件，明确 NOSCRIPT 才可缓存回退。
 - 请求前确认对应执行尝试仍在集合内，跳过已移除条目。检查后移除与在途请求仍有竞争，接受 Renew 成功延后回收的窗口，不做复杂串行化。
 - 串行扫描有容量限制：renewInterval 是触发周期，不保证每个任务在该时长内完成续租；即使 renewInterval <= leaseDuration / 3，请求数量和延迟仍可能使后续任务过期。有界并发留待需要时另行设计。
