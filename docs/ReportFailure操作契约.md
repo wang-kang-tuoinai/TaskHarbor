@@ -2,6 +2,8 @@
 
 > 初版仅使用 Redis。一次调用处理单个任务的一轮失败；取消直接由 Cancel 进入 canceled，失败上报不补写非 running 任务。
 
+> 2026-11-07 已确认设计，依据 [ADR-0006](adr/0006-result-reporting-lifecycle.md)。本轮仅实现真实结果上报与监督衔接，不包含 Reclaim、Cancel、Shutdown；设计确认不表示实现完成。
+
 ## 1. 操作目的
 
 Server 在 handler 返回错误，或者本地 execution_timeout_ms 到期时，报告本轮失败并释放 Redis 执行权，根据已消耗尝试次数进入 retry_wait 或 failed。
@@ -12,10 +14,12 @@ Server 在 handler 返回错误，或者本地 execution_timeout_ms 到期时，
 
 - 调用方：Server 的失败/超时上报流程。
 - 输入：单个 task_id、该轮 attempt_token、error_message。
-- task_id、attempt_token、error_message 必填；标识非空，错误内容遵守平台大小限制。
+- task_id、attempt_token、error_message 必填且非空；error_message 最多 4096 字节。
 - 超时由 Server 生成明确的超时错误信息，业务调用方不指定当前 attempts 或目标状态。
 - retry_delay_ms 不随本次上报传入，读取 Submit 保存的不可变配置。
 - 网络重试复用相同 task_id、attempt_token 和错误内容。
+
+Server 在首次请求前固定错误内容：超长时按 UTF-8 边界截断并添加截断标记，标记计入 4096 字节上限；非 nil error 的 Error() 为空时补固定说明“Handler 返回了空错误信息”。不要在每次重试时重新生成内容，也不因诊断信息过长而放弃合法失败上报。
 
 ## 3. 执行前置条件
 
@@ -28,6 +32,10 @@ Server 在 handler 返回错误，或者本地 execution_timeout_ms 到期时，
 5. attempts、max_retry 及本次可能使用的 retry_delay_ms 等记录合法，异常数据按一致性错误处理。
 
 不设置或读取取消标记。只要任务不是 running，包括已经 canceled，就拒绝本次上报，不补写错误和错误时间。
+
+先判断存在性、合法状态和 token，再检查当前执行所需索引。当前身份匹配的 running 任务缺 active/lease、必要字段缺失、非法数值或相关 key 类型错误属于一致性错误；索引完整但租约到期正常拒绝。已非 running 不因正常索引清理而误报损坏。
+
+所有必要检查在首次写入前完成，包括目标 retry 索引类型、尝试预算、时长换算与 Redis 毫秒时间相加的安全范围；不能先删除 active/lease 再发现目标索引无法写入。只校验当前操作所需数据，不自动修复异常。
 
 ## 4. 成功后的变化与返回值
 
@@ -55,7 +63,7 @@ retry_delay_ms 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得�
 返回 applied、error：
 
 - true、nil：本次迁移成功。
-- false、nil：任务不存在、状态不符、token 不符、lease 缺失或已到期，没有修改。
+- false、nil：任务不存在、合法状态非 running、token 不符或索引完整但租约已到期，没有修改。
 - 可识别错误：参数或一致性异常。
 - 存储/网络错误或响应丢失：结果可能未知，不能把 applied 当作确定未执行。
 
@@ -71,16 +79,18 @@ retry_delay_ms 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得�
 
 ## 6. 失败及结果未知时的行为
 
-- 参数错误或已识别的一致性错误：记录并返回，不盲目原样重试，不声称已自动修复。
+- 参数、一致性、明确权限或脚本错误及非法响应：结束该轮上报和续租，不重试，记录错误并调用 reportFatal 停止新领取；其他任务继续续租和上报。不自动修复，不把非法响应当成确定未执行。
 - applied = false、error = nil：不重试本次上报，停止续租并结束本地上报管理。
-- 网络/存储异常或结果未知：最多额外重试两次，含首次最多三次；收到确定成功或拒绝即停止。
+- 暂时性网络错误、请求超时或可重试的结果未知：最多额外重试两次，含首次最多三次；收到确定成功或拒绝即停止。明确非暂时性错误及非法响应不进入重试。
 - 重试耗尽后，从续租集合移除该任务并结束本地上报流程；若 Redis 仍保有完整 running、active、lease，则由 Reclaim 到期处理。
-- handler 正常返回错误后的有界上报期间，可继续对该轮续租；上报最终结束后必须停止。
+- handler 正常返回错误后的有界上报期间保留续租资格，Renew 正常时继续续租；上报最终结束后清理记录并停止续租。
 - 本地超时已裁定时，应立即停止续租并取消 context，再调用本操作，不为等待上报而延长 execution_timeout_ms。
 - 结束上报管理后，不再接受该轮迟到 handler 返回作为新的上报结果。
 - handler 尚未退出时，仍保留退出等待和槽归还责任。执行槽只在 handler 实际退出后归还一次，不能靠删除续租记录提前归还。
 
 如果超时上报失败，Redis 可能暂时仍是 running；只能等待租约回收，不能宣称本地超时已经同步终结存储状态。
+
+两操作共享的职责划分、每次 3 秒请求预算、100ms/200ms 等待、取消检查、单分支监督及 slog 记录规则，统一见 [complete 契约第 6.1、6.2 节](complete操作契约.md)。超时 ReportFailure 必须使用独立于已取消 Handler context 的请求预算，不恢复续租资格；网络耗尽不单独触发实例停止领取。正常错误分支选定后，不因上报耗时再次改判执行超时。
 
 ## 7. 并发竞争规则
 
@@ -110,13 +120,20 @@ retry_delay_ms 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得�
 - Lua 错误不自动回滚此前写入。部分写入后的自动检测、对账和修复不属于第一版；移除了 lease 却未完成迁移等异常不能承诺由普通回收器发现。
 - execution_timeout_ms 仅在 Server 本地控制，不保存 execution_deadline_at。初版也不在本地维护租约有效期，相关保护明确留待后续。
 
+本轮不实现 Reclaim，因此成功进入 retry_wait 只表示已安排等待，不会自动重新入队；上报耗尽后遗留 running 也不承诺自动回收。Handler 退出即释放槽，上报中的任务数可能超过 Handler 并发数，本轮不增加独立上报并发限制。
+
 ## 10. 验收场景
 
 - 有剩余额度：进入 retry_wait，错误字段正确，score = Redis now + 保存的 retry_delay_ms，任务详情不含 next_retry_at 字段。
 - 额度耗尽：进入 failed 并写 finished_at，无 retry 成员，attempts 不变。
 - canceled、completed 或其他非 running：拒绝且不补写错误。
-- 旧 token、已过期或缺失租约：拒绝，不影响新一轮。
+- 旧 token、索引完整但租约到期：正常拒绝，不影响新一轮；当前身份 running 缺 active/lease 为一致性错误且零写入。
 - 首次成功但响应丢失：重复上报不重复迁移、入队或更新时间。
 - 网络错误重试耗尽：停止续租，到期回收完整执行记录。
 - 超时且 handler 尚未退出：允许上报失败，但实际退出前不归还执行槽。
 - 并发成功、失败、取消、续租、回收：符合第 7 节。
+
+- 4096 字节边界、UTF-8 截断与标记、空错误补说明、固定重试内容；panic 和未知 Handler 的失败路径同样适用。
+- attempts 超预算、非法时长、时间计算溢出、retry key 类型错误：写前拒绝，原 Hash 与索引不被部分修改。
+- 复用 complete 契约的共享预算、取消、故障范围、日志和监督竞争验收；明确超时后不续租、独立上报可以发出且未退出 Handler 不释放槽。
+- retry_wait 正确建立 score 但不自动重新入队；未实现操作的竞争以受控状态迁移验证，不声称已实现自动恢复。
