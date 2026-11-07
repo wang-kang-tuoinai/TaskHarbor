@@ -57,7 +57,10 @@ func TestRenewRedisServerKeepsLongTaskManaged(t *testing.T) {
 	if err := s.HandleFunc("job", func(ctx context.Context, _ *Task) error { started <- ctx; <-release; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	s.onComplete = func(key executionKey, result []byte) { s.complete(key, result); completed <- struct{}{} }
+	s.onComplete = func(ctx context.Context, record *execution, key executionKey, result []byte) {
+		s.complete(ctx, record, key, result)
+		completed <- struct{}{}
+	}
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +105,8 @@ func TestRenewRedisServerKeepsLongTaskManaged(t *testing.T) {
 	}
 	stopStartLoop(t, s)
 	awaitStartExecutions(t, s)
-	if fields := submitHash(t, rdb, "long"); fields["status"] != "running" || fields["attempts"] != "1" {
-		t.Fatalf("placeholder changed Redis state: %q", fields)
+	if fields := submitHash(t, rdb, "long"); fields["status"] != "completed" || fields["attempts"] != "1" || fields["finished_at"] == "" {
+		t.Fatalf("long task did not complete in Redis: %q", fields)
 	}
 }
 
@@ -166,8 +169,8 @@ func TestRenewRedisServerLostReplyRevalidatesNextRound(t *testing.T) {
 	if err := s.HandleFunc("job", func(ctx context.Context, _ *Task) error { started <- ctx; <-release; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	s.onComplete = func(executionKey, []byte) { reports.Add(1) }
-	s.onFailure = func(executionKey, error) { reports.Add(1) }
+	s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports.Add(1) }
+	s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { reports.Add(1) }
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}

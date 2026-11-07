@@ -20,3 +20,16 @@ var claimScript = redis.NewScript(claimSource)
 var renewSource string
 
 var renewScript = redis.NewScript(renewSource)
+
+//go:embed scripts/report_authority.lua
+var reportAuthoritySource string
+
+//go:embed scripts/complete_task.lua
+var completeSource string
+
+var completeScript = redis.NewScript(reportAuthoritySource + "\n" + completeSource)
+
+//go:embed scripts/report_failure_task.lua
+var failureSource string
+
+var failureScript = redis.NewScript(reportAuthoritySource + "\n" + failureSource)

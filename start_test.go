@@ -53,6 +53,9 @@ func newStartServer(t *testing.T, process func(context.Context, redis.Cmder) err
 		t.Fatal(err)
 	}
 	s := public.(*server)
+	// 本夹具隔离 Claim/Renew 调度；真实上报由独立的报告测试安装 Hook 或使用 Redis 验收。
+	s.onComplete = func(context.Context, *execution, executionKey, []byte) {}
+	s.onFailure = func(context.Context, *execution, executionKey, error) {}
 	// 当前 go-redis 的 WithTimeout 共享池但不复制命令 Hook；两个测试调用处分别安装。
 	s.renewClient.AddHook(submitHook{process: process})
 	t.Cleanup(func() {
@@ -121,13 +124,15 @@ func TestStartHandsClaimToHandler(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		s.onComplete = func(key executionKey, result []byte) {
+		s.onComplete = func(ctx context.Context, record *execution, key executionKey, result []byte) {
 			if string(result) != `"ok"` {
 				t.Errorf("result=%s", result)
 			}
 			completed <- key
 		}
-		s.onFailure = func(executionKey, error) { t.Error("unexpected execution failure") }
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) {
+			t.Error("unexpected execution failure")
+		}
 		if err := s.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -421,8 +426,10 @@ func TestStartFatalClaimLeavesExistingHandlerRunning(t *testing.T) {
 			t.Fatal(err)
 		}
 		completed := 0
-		s.onComplete = func(executionKey, []byte) { completed++ }
-		s.onFailure = func(executionKey, error) { t.Error("claim failure became execution failure") }
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { completed++ }
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) {
+			t.Error("claim failure became execution failure")
+		}
 		if err := s.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -465,8 +472,10 @@ func TestStartUnknownHandlerUsesFailurePlaceholder(t *testing.T) {
 		if err := s.HandleFunc("known", func(context.Context, *Task) error { t.Error("selected wrong handler"); return nil }); err != nil {
 			t.Fatal(err)
 		}
-		s.onComplete = func(executionKey, []byte) { t.Error("unknown handler completed") }
-		s.onFailure = func(key executionKey, err error) {
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) {
+			t.Error("unknown handler completed")
+		}
+		s.onFailure = func(ctx context.Context, record *execution, key executionKey, err error) {
 			failures++
 			if key.taskID != "id" || key.attemptToken != token || !strings.Contains(err.Error(), "unregistered") {
 				t.Errorf("key=%+v err=%v", key, err)

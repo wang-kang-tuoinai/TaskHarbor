@@ -101,7 +101,10 @@ func TestStartRedisPipelineAndConcurrency(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s.onComplete = func(key executionKey, result []byte) { s.complete(key, result); completed <- key.taskID }
+	s.onComplete = func(ctx context.Context, record *execution, key executionKey, result []byte) {
+		s.complete(ctx, record, key, result)
+		completed <- key.taskID
+	}
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,8 +140,8 @@ func TestStartRedisPipelineAndConcurrency(t *testing.T) {
 	}
 	for i := range 5 {
 		fields := submitHash(t, rdb, fmt.Sprintf("task-%d", i))
-		if fields["status"] != "running" || fields["attempts"] != "1" || fields["owner_id"] != s.ownerID || fields["attempt_token"] == "" || fields["result"] != "" || fields["finished_at"] != "" {
-			t.Fatalf("placeholder changed Redis state: %q", fields)
+		if fields["status"] != "completed" || fields["attempts"] != "1" || fields["owner_id"] != "" || fields["attempt_token"] != "" || fields["result"] != fmt.Sprintf("\"task-%d\"", i) || fields["finished_at"] == "" {
+			t.Fatalf("completed task has wrong Redis state: %q", fields)
 		}
 	}
 	requirePending(t, rdb)
@@ -204,7 +207,10 @@ func TestStartRedisLostClaimReply(t *testing.T) {
 	if err := s.HandleFunc("job", func(_ context.Context, task *Task) error { started <- task.ID; <-release; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	s.onComplete = func(key executionKey, result []byte) { s.complete(key, result); completed <- struct{}{} }
+	s.onComplete = func(ctx context.Context, record *execution, key executionKey, result []byte) {
+		s.complete(ctx, record, key, result)
+		completed <- struct{}{}
+	}
 	armed.Store(true)
 	if err := s.Start(); err != nil {
 		t.Fatal(err)

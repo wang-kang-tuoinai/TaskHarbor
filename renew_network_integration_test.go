@@ -64,6 +64,17 @@ func readRenewTCPCommand(reader *bufio.Reader) ([]string, error) {
 }
 
 func TestRenewTCPDeadlineOptionsAndSharedPool(t *testing.T) {
+	testServerTCPDeadline(t, "renew")
+}
+
+func TestReportingTCPDeadlineOptionsAndSharedPool(t *testing.T) {
+	for _, operation := range []string{"complete", "ReportFailure"} {
+		t.Run(operation, func(t *testing.T) { testServerTCPDeadline(t, operation) })
+	}
+}
+
+func testServerTCPDeadline(t *testing.T, operation string) {
+	t.Helper()
 	for _, tc := range []struct {
 		name                string
 		read, write, budget time.Duration
@@ -140,6 +151,10 @@ func TestRenewTCPDeadlineOptionsAndSharedPool(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := public.(*server)
+			client := s.renewClient
+			if operation != "renew" {
+				client = s.reportClient
+			}
 			t.Cleanup(func() { s.cancelClaim(); s.cancelRenew() })
 			if !unchanged() {
 				t.Fatal("WithTimeout changed caller configuration")
@@ -147,13 +162,13 @@ func TestRenewTCPDeadlineOptionsAndSharedPool(t *testing.T) {
 			if err := rdb.Ping(context.Background()).Err(); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.renewClient.Ping(context.Background()).Err(); err != nil {
+			if err := client.Ping(context.Background()).Err(); err != nil {
 				t.Fatal(err)
 			}
-			if accepted.Load() != 1 || rdb.PoolStats().TotalConns != 1 || s.renewClient.PoolStats().TotalConns != 1 {
+			if accepted.Load() != 1 || rdb.PoolStats().TotalConns != 1 || client.PoolStats().TotalConns != 1 {
 				t.Fatal("renew wrapper created another pool or connection")
 			}
-			if tc.read > 0 && s.renewClient.Options().ReadTimeout > tc.read {
+			if tc.read > 0 && client.Options().ReadTimeout > tc.read {
 				t.Fatal("wrapper lengthened shorter I/O timeout")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), tc.budget)
@@ -161,7 +176,15 @@ func TestRenewTCPDeadlineOptionsAndSharedPool(t *testing.T) {
 			deadline, _ := ctx.Deadline()
 			armed.Store(true)
 			began := time.Now()
-			applied, err := redisstore.Renew(ctx, s.renewClient, redisstore.RenewParams{TaskID: "task", AttemptToken: "token", LeaseDurationMS: 30000})
+			var applied bool
+			switch operation {
+			case "renew":
+				applied, err = redisstore.Renew(ctx, client, redisstore.RenewParams{TaskID: "task", AttemptToken: "token", LeaseDurationMS: 30000})
+			case "complete":
+				applied, err = redisstore.Complete(ctx, client, redisstore.CompleteParams{TaskID: "task", AttemptToken: "token"})
+			case "ReportFailure":
+				applied, err = redisstore.ReportFailure(ctx, client, redisstore.FailureParams{TaskID: "task", AttemptToken: "token", ErrorMessage: "error"})
+			}
 			elapsed := time.Since(began)
 			var networkErr net.Error
 			if applied || !errors.As(err, &networkErr) || !networkErr.Timeout() {
