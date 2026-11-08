@@ -65,7 +65,9 @@ type executionKey struct {
 type execution struct {
 	executionTimeout time.Duration
 	cancel           context.CancelCauseFunc
-	reportForbidden  atomic.Bool // 超时为首个取消原因时，后来已知失权仍须禁止新上报。
+	reportForbidden  atomic.Bool     // 超时为首个取消原因时，后来已知失权仍须禁止新上报。
+	reportCtx        context.Context // 独立于 Handler 超时及 Claim/Renew，已知撤销可中断上报等待。
+	cancelReports    context.CancelFunc
 }
 
 // Server 是任务平台对外暴露的执行服务接口。内部实现类型未导出，
@@ -76,7 +78,7 @@ type Server interface {
 	HandleFunc(taskType string, fn HandlerFunc) error
 	// Start 封存注册并启动独立领取、续租循环，非阻塞返回；对象不能重复启动。
 	Start() error
-	// Errors 供单个调用方接收 Claim/Renew 首个导致停止领取的后台致命错误。
+	// Errors 供单个调用方接收 Claim/Renew/结果上报首个导致停止领取的后台致命错误。
 	// channel 不关闭来表达退出，收到通知不表示已有任务或整个服务已退出。
 	Errors() <-chan error
 }
@@ -86,6 +88,7 @@ type Server interface {
 type server struct {
 	redisClient     *redis.Client
 	renewClient     *redis.Client // WithTimeout 包装共享调用方连接池，不得 Close。
+	reportClient    *redis.Client // 同样共享调用方池，独立使用上报的 I/O 预算，不得 Close。
 	slots           chan struct{}
 	leaseDuration   time.Duration // Claim/Renew 的有效期从 Redis 当前时间起算。
 	renewInterval   time.Duration
@@ -100,9 +103,9 @@ type server struct {
 	executions   map[executionKey]*execution
 	abort        chan struct{} // 由未来唯一的生命周期管理方关闭；当前没有公开退出入口。
 
-	// 构造时绑定内部上报占位；测试可在启动执行前替换，观察分支而非伪造存储结果。
-	onComplete func(executionKey, []byte)
-	onFailure  func(executionKey, error)
+	// 构造时绑定真实上报；监督测试可在启动执行前替换以观察唯一结果分支。
+	onComplete func(context.Context, *execution, executionKey, []byte)
+	onFailure  func(context.Context, *execution, executionKey, error)
 
 	claimCtx        context.Context
 	cancelClaim     context.CancelFunc // 停止新领取，独立于 Renew 和已有 Handler。
@@ -265,17 +268,10 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	}
 	claimCtx, cancelClaim := context.WithCancel(context.Background())
 	renewCtx, cancelRenew := context.WithCancel(context.Background())
-	// WithTimeout 只复制客户端配置、共享原池。取最短正 I/O 预算，既启用负数超时
-	// 配置下的 socket deadline，也不会延长调用方已有的更短超时。
-	ioTimeout := cfg.renewInterval
-	for _, limit := range []time.Duration{rdb.Options().ReadTimeout, rdb.Options().WriteTimeout} {
-		if limit > 0 && limit < ioTimeout {
-			ioTimeout = limit
-		}
-	}
 	s := &server{
 		redisClient:     rdb,
-		renewClient:     rdb.WithTimeout(ioTimeout),
+		renewClient:     boundedRedisClient(rdb, cfg.renewInterval),
+		reportClient:    boundedRedisClient(rdb, reportRequestTimeout),
 		slots:           make(chan struct{}, cfg.concurrency),
 		leaseDuration:   cfg.leaseDuration,
 		renewInterval:   cfg.renewInterval,
@@ -296,6 +292,17 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	s.onComplete = s.complete
 	s.onFailure = s.reportFailure
 	return s, nil
+}
+
+// WithTimeout 复制配置且共享原池，取最短正 I/O 预算以保留更短超时，
+// 并使调用方禁用 I/O 超时时仍会设置 socket deadline。包装不得 Close。
+func boundedRedisClient(rdb *redis.Client, budget time.Duration) *redis.Client {
+	for _, limit := range []time.Duration{rdb.Options().ReadTimeout, rdb.Options().WriteTimeout} {
+		if limit > 0 && limit < budget {
+			budget = limit
+		}
+	}
+	return rdb.WithTimeout(budget)
 }
 
 func (s *server) HandleFunc(taskType string, fn HandlerFunc) error {

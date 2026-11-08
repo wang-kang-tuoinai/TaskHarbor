@@ -81,8 +81,10 @@ func TestRenewFailureScopes(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				s.onComplete = func(key executionKey, _ []byte) { reports <- key.taskID }
-				s.onFailure = func(executionKey, error) { t.Error("renew cancellation became business failure") }
+				s.onComplete = func(ctx context.Context, record *execution, key executionKey, _ []byte) { reports <- key.taskID }
+				s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) {
+					t.Error("renew cancellation became business failure")
+				}
 				if err := s.Start(); err != nil {
 					t.Fatal(err)
 				}
@@ -209,8 +211,10 @@ func TestClaimAndRenewFatalErrorsDoNotBlockEachOther(t *testing.T) {
 		if err := s.HandleFunc("job", func(ctx context.Context, _ *Task) error { started <- ctx; <-release; return nil }); err != nil {
 			t.Fatal(err)
 		}
-		s.onComplete = func(executionKey, []byte) { reports <- struct{}{} }
-		s.onFailure = func(executionKey, error) { t.Error("global failure reported business failure") }
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports <- struct{}{} }
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) {
+			t.Error("global failure reported business failure")
+		}
 		if err := s.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -291,8 +295,8 @@ func TestRenewGlobalFaultAcceptsLateClaimNormally(t *testing.T) {
 				if err := s.HandleFunc("job", func(_ context.Context, task *Task) error { started <- task.ID; <-release; return nil }); err != nil {
 					t.Fatal(err)
 				}
-				s.onComplete = func(key executionKey, _ []byte) { completed <- key.taskID }
-				s.onFailure = func(key executionKey, err error) {
+				s.onComplete = func(ctx context.Context, record *execution, key executionKey, _ []byte) { completed <- key.taskID }
+				s.onFailure = func(ctx context.Context, record *execution, key executionKey, err error) {
 					if !errors.Is(err, context.DeadlineExceeded) {
 						t.Error(err)
 					}

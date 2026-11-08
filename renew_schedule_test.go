@@ -209,8 +209,10 @@ func TestRenewNeverResetsHandlerTimeout(t *testing.T) {
 		if err := s.HandleFunc("job", func(context.Context, *Task) error { started <- struct{}{}; <-release; return nil }); err != nil {
 			t.Fatal(err)
 		}
-		s.onComplete = func(executionKey, []byte) { t.Error("late result completed") }
-		s.onFailure = func(_ executionKey, err error) { failed <- err }
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) {
+			t.Error("late result completed")
+		}
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, err error) { failed <- err }
 		if err := s.Start(); err != nil {
 			t.Fatal(err)
 		}

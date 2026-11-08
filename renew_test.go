@@ -140,8 +140,8 @@ func TestExecutionKnownLossSuppressesAllReporting(t *testing.T) {
 						revoke(cause)
 					}
 					reports := make(chan struct{}, 4)
-					s.onComplete = func(executionKey, []byte) { reports <- struct{}{} }
-					s.onFailure = func(executionKey, error) { reports <- struct{}{} }
+					s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports <- struct{}{} }
+					s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { reports <- struct{}{} }
 					s.slots <- struct{}{}
 					done, err := s.acceptExecution(parent, &Task{ID: "task", Type: "job", Attempts: 1}, executionKey{taskID: "task", attemptToken: "token"}, time.Second)
 					if err != nil {
@@ -218,8 +218,8 @@ func TestExecutionKnownLossAtReportingBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 				reports := make(chan struct{}, 4)
-				s.onComplete = func(executionKey, []byte) { reports <- struct{}{} }
-				s.onFailure = func(executionKey, error) { reports <- struct{}{} }
+				s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports <- struct{}{} }
+				s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { reports <- struct{}{} }
 				s.slots <- struct{}{}
 				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job"}, key, time.Second)
 				if err != nil {

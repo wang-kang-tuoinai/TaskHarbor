@@ -31,7 +31,7 @@ func TestExecutionSuccess(t *testing.T) {
 			t.Fatal(err)
 		}
 		calls := 0
-		s.onComplete = func(got executionKey, result []byte) {
+		s.onComplete = func(ctx context.Context, record *execution, got executionKey, result []byte) {
 			calls++
 			if got != key || string(result) != `{"ok":true}` {
 				t.Errorf("complete key=%+v result=%s", got, result)
@@ -40,7 +40,9 @@ func TestExecutionSuccess(t *testing.T) {
 				t.Error("normal execution cleaned up before reporting placeholder")
 			}
 		}
-		s.onFailure = func(executionKey, error) { t.Error("success entered failure branch") }
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) {
+			t.Error("success entered failure branch")
+		}
 		s.slots <- struct{}{}
 		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1, Payload: []byte("payload")}, key, time.Second)
 		if err != nil {
@@ -62,8 +64,10 @@ func TestExecutionHandlerPanic(t *testing.T) {
 			t.Fatal(err)
 		}
 		failures := 0
-		s.onComplete = func(executionKey, []byte) { t.Error("panic entered complete branch") }
-		s.onFailure = func(got executionKey, err error) {
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) {
+			t.Error("panic entered complete branch")
+		}
+		s.onFailure = func(ctx context.Context, record *execution, got executionKey, err error) {
 			failures++
 			if got != key || err == nil || !strings.Contains(err.Error(), "broken handler") {
 				t.Errorf("panic failure key=%+v err=%v", got, err)
@@ -91,8 +95,10 @@ func TestExecutionHandlerError(t *testing.T) {
 			t.Fatal(err)
 		}
 		failures := 0
-		s.onComplete = func(executionKey, []byte) { t.Error("error entered complete branch") }
-		s.onFailure = func(got executionKey, err error) {
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) {
+			t.Error("error entered complete branch")
+		}
+		s.onFailure = func(ctx context.Context, record *execution, got executionKey, err error) {
 			failures++
 			if got != key || !errors.Is(err, cause) {
 				t.Errorf("failure key=%+v err=%v", got, err)
@@ -120,8 +126,10 @@ func TestExecutionUnknownHandler(t *testing.T) {
 		key := executionKey{taskID: "task", attemptToken: "unknown-attempt"}
 		task := &Task{ID: "task", Type: "unregistered", Attempts: 2}
 		failures := 0
-		s.onComplete = func(executionKey, []byte) { t.Error("unknown handler entered complete branch") }
-		s.onFailure = func(got executionKey, err error) {
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) {
+			t.Error("unknown handler entered complete branch")
+		}
+		s.onFailure = func(ctx context.Context, record *execution, got executionKey, err error) {
 			failures++
 			if got != key || err == nil || !strings.Contains(err.Error(), "unregistered") {
 				t.Errorf("unknown handler failure key=%+v err=%v", got, err)
@@ -163,8 +171,8 @@ func TestExecutionTimeoutRetainsSlotUntilHandlerExit(t *testing.T) {
 			t.Fatal(err)
 		}
 		completions, failures := 0, 0
-		s.onComplete = func(executionKey, []byte) { completions++ }
-		s.onFailure = func(got executionKey, err error) {
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { completions++ }
+		s.onFailure = func(ctx context.Context, record *execution, got executionKey, err error) {
 			failures++
 			if got != key || !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("timeout key=%+v err=%v", got, err)
@@ -237,8 +245,8 @@ func TestExecutionAbortBroadcast(t *testing.T) {
 			t.Fatal(err)
 		}
 		var reports atomic.Int32
-		s.onComplete = func(executionKey, []byte) { reports.Add(1) }
-		s.onFailure = func(executionKey, error) { reports.Add(1) }
+		s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports.Add(1) }
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { reports.Add(1) }
 		var done []<-chan struct{}
 		for i := range 3 {
 			s.slots <- struct{}{}
@@ -306,14 +314,14 @@ func TestExecutionOldCleanupPreservesNewAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 		var completed atomic.Int32
-		s.onComplete = func(key executionKey, _ []byte) {
+		s.onComplete = func(ctx context.Context, record *execution, key executionKey, _ []byte) {
 			completed.Add(1)
 			if key == oldKey {
 				close(reportStarted)
 				<-reportRelease
 			}
 		}
-		s.onFailure = func(executionKey, error) { t.Error("unexpected failure") }
+		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { t.Error("unexpected failure") }
 		s.slots <- struct{}{}
 		oldDone, err := s.acceptExecution(context.Background(), &Task{ID: oldKey.taskID, Type: "job", Attempts: 1}, oldKey, time.Hour)
 		if err != nil {
@@ -360,13 +368,13 @@ func TestExecutionCompetingSignalsChooseOneBranch(t *testing.T) {
 					t.Fatal(err)
 				}
 				var completed, failed atomic.Int32
-				s.onComplete = func(got executionKey, result []byte) {
+				s.onComplete = func(ctx context.Context, record *execution, got executionKey, result []byte) {
 					completed.Add(1)
 					if got != key || string(result) != `"winner"` {
 						t.Errorf("complete key=%+v result=%s", got, result)
 					}
 				}
-				s.onFailure = func(got executionKey, err error) {
+				s.onFailure = func(ctx context.Context, record *execution, got executionKey, err error) {
 					failed.Add(1)
 					if got != key || !errors.Is(err, context.DeadlineExceeded) {
 						t.Errorf("failure key=%+v err=%v", got, err)
