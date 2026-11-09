@@ -3,6 +3,7 @@ package taskq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -320,6 +321,9 @@ func TestStartFatalClaimErrorsStopAndNotify(t *testing.T) {
 		{"wrong-type", startRedisError("WRONGTYPE invalid index"), nil, nil},
 		{"script", startRedisError("ERR script failure"), nil, nil},
 		{"invalid-response", nil, []any{"untrusted-id"}, redisstore.ErrClaimResponse},
+		{"dns-not-found", &net.DNSError{Err: "no such host", Name: "redis.invalid", IsNotFound: true}, nil, nil},
+		{"address", fmt.Errorf("dial Redis: %w", &net.AddrError{Err: "missing port", Addr: "redis"}), nil, nil},
+		{"invalid-address", net.InvalidAddrError("invalid Redis address"), nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -343,7 +347,7 @@ func TestStartFatalClaimErrorsStopAndNotify(t *testing.T) {
 				select {
 				case <-s.claimDone:
 				default:
-					t.Fatal("fatal error notification blocked")
+					t.Fatal("Claim did not stop before Errors was read")
 				}
 				select {
 				case err := <-s.Errors():
@@ -491,8 +495,33 @@ func TestStartUnknownHandlerUsesFailurePlaceholder(t *testing.T) {
 	})
 }
 
+func TestTransientRedisErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"dns-not-found", &net.DNSError{Err: "no such host", IsNotFound: true}, false},
+		{"dns-other", &net.DNSError{Err: "invalid DNS response"}, false},
+		{"dns-timeout", &net.DNSError{Err: "lookup timeout", IsTimeout: true}, true},
+		{"dns-temporary", &net.DNSError{Err: "lookup unavailable", IsTemporary: true}, true},
+		{"address", &net.AddrError{Err: "missing port", Addr: "redis"}, false},
+		{"invalid-address", net.InvalidAddrError("invalid Redis address"), false},
+		{"canceled", context.Canceled, false},
+		{"redis", startRedisError("NOPERM forbidden"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, err := range []error{tc.err, fmt.Errorf("Redis request: %w", tc.err)} {
+				if got := transientRedisError(err); got != tc.want {
+					t.Errorf("transientRedisError(%v) = %v, want %v", err, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestStartOtherTransientErrorsRetry(t *testing.T) {
-	for _, cause := range []error{io.ErrUnexpectedEOF, net.ErrClosed, context.DeadlineExceeded, redis.ErrPoolTimeout, &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset")}} {
+	for _, cause := range []error{io.ErrUnexpectedEOF, net.ErrClosed, context.DeadlineExceeded, redis.ErrPoolTimeout, &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset")}, &net.DNSError{Err: "lookup timeout", IsTimeout: true}} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				calls := 0

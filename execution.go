@@ -13,8 +13,7 @@ var (
 	errExecutionInconsistent = errors.New("execution data inconsistent")
 )
 
-func reportingForbidden(ctx context.Context) bool {
-	cause := context.Cause(ctx)
+func forbidsReporting(cause error) bool {
 	return errors.Is(cause, errExecutionLost) || errors.Is(cause, errExecutionCanceled) || errors.Is(cause, errExecutionInconsistent)
 }
 
@@ -33,8 +32,9 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 	reportCtx, cancelReports := context.WithCancel(context.Background())
 	record := &execution{executionTimeout: timeout, reportCtx: reportCtx, cancelReports: cancelReports}
 	record.cancel = func(cause error) {
-		if errors.Is(cause, errExecutionLost) || errors.Is(cause, errExecutionCanceled) || errors.Is(cause, errExecutionInconsistent) {
-			cancelReports()
+		// 使用本次撤销的原因，Handler context 可能已保留了更早的超时原因。
+		if forbidsReporting(cause) {
+			record.cancelReports()
 		}
 		cancel(cause)
 	}
@@ -51,7 +51,7 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 	go func() {
 		defer close(done)
 		defer cancelReports()
-		if record.reportForbidden.Load() || reportingForbidden(ctx) {
+		if s.reportingStopped(ctx, record) {
 			s.deleteExecution(key)
 			cancel(nil)
 			<-s.slots
@@ -60,9 +60,7 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 		if handler == nil {
 			// 未启动 Handler 时，槽仍由接收/监督路径归还，不创建虚假的执行协程。
 			<-s.slots
-			if !record.reportForbidden.Load() && !reportingForbidden(ctx) {
-				s.onFailure(ctx, record, key, fmt.Errorf("no handler registered for task type %q", task.Type))
-			}
+			s.reportExecutionResult(ctx, record, key, executionResult{err: fmt.Errorf("no handler registered for task type %q", task.Type)})
 			s.deleteExecution(key)
 			cancel(nil)
 			return
@@ -87,23 +85,14 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 		}()
 		select {
 		case result := <-results:
-			// select 可在取消已知时选中结果；开始上报前必须再次检查原因，不能查表代替。
-			if !record.reportForbidden.Load() && !reportingForbidden(ctx) {
-				if result.err == nil {
-					s.onComplete(ctx, record, key, result.result)
-				} else {
-					s.onFailure(ctx, record, key, result.err)
-				}
-			}
+			s.reportExecutionResult(ctx, record, key, result)
 			s.deleteExecution(key)
 			cancel(nil)
 		case <-timer.C:
 			// 先移出未来的续租集合并取消，再处理超时；迟到结果只留在缓冲 channel。
 			s.deleteExecution(key)
 			cancel(context.DeadlineExceeded)
-			if !record.reportForbidden.Load() && !reportingForbidden(ctx) {
-				s.onFailure(ctx, record, key, context.DeadlineExceeded)
-			}
+			s.reportExecutionResult(ctx, record, key, executionResult{err: context.DeadlineExceeded})
 		case <-ctx.Done():
 			s.deleteExecution(key)
 		case <-s.abort:
@@ -113,4 +102,16 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 		}
 	}()
 	return done, nil
+}
+
+// 已选定的分支可能与取消同时就绪。调用上报前再次检查停止状态，不能查表代替。
+func (s *server) reportExecutionResult(ctx context.Context, record *execution, key executionKey, result executionResult) {
+	if s.reportingStopped(ctx, record) {
+		return
+	}
+	if result.err == nil {
+		s.onComplete(ctx, record, key, result.result)
+	} else {
+		s.onFailure(ctx, record, key, result.err)
+	}
 }

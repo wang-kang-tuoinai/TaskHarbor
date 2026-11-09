@@ -11,6 +11,41 @@ import (
 	"time"
 )
 
+func TestExecutionStoppedBeforeHandlerStart(t *testing.T) {
+	for _, mode := range []string{"abort", "parent"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newTestServer(t, WithConcurrency(1))
+				if err := s.HandleFunc("job", func(context.Context, *Task) error {
+					t.Error("handler started after execution was stopped")
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				s.onComplete = func(context.Context, *execution, executionKey, []byte) { t.Error("completion after stop") }
+				s.onFailure = func(context.Context, *execution, executionKey, error) { t.Error("failure after stop") }
+				parent, cancelParent := context.WithCancelCause(context.Background())
+				defer cancelParent(nil)
+				if mode == "abort" {
+					close(s.abort)
+				} else {
+					cancelParent(errExecutionCanceled)
+				}
+				s.slots <- struct{}{}
+				done, err := s.acceptExecution(parent, &Task{Type: "job"}, executionKey{"task", "token"}, time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-done
+				synctest.Wait()
+				if len(s.slots) != 0 || len(s.snapshotExecutions()) != 0 {
+					t.Fatal("stopped handoff leaked a slot or renewal eligibility")
+				}
+			})
+		})
+	}
+}
+
 func TestExecutionSuccess(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newTestServer(t, WithConcurrency(1))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,7 +17,23 @@ import (
 )
 
 func TestRenewFailureScopes(t *testing.T) {
-	for _, mode := range []string{"rejected", "inconsistent", "global", "invalid", "network"} {
+	for _, tc := range []struct {
+		mode       string
+		networkErr error
+		transient  bool
+	}{
+		{mode: "rejected"},
+		{mode: "inconsistent"},
+		{mode: "global"},
+		{mode: "invalid"},
+		{"network", io.EOF, true},
+		{"dns-temporary", &net.DNSError{Err: "lookup unavailable", IsTemporary: true}, true},
+		{"dns-not-found", &net.DNSError{Err: "no such host", IsNotFound: true}, false},
+		{"address", &net.AddrError{Err: "missing port", Addr: "redis"}, false},
+		{"invalid-address", fmt.Errorf("dial Redis: %w", net.InvalidAddrError("invalid address")), false},
+	} {
+		mode := tc.mode
+		global := mode == "global" || mode == "invalid" || tc.networkErr != nil && !tc.transient
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				requests := make(chan string, 32)
@@ -31,6 +48,9 @@ func TestRenewFailureScopes(t *testing.T) {
 					if isRenewCommand(cmd) {
 						id := cmd.Args()[6].(string)
 						requests <- id
+						if tc.networkErr != nil && (!tc.transient || id == "bad") {
+							return tc.networkErr
+						}
 						if mode == "global" {
 							return startRedisError("NOPERM renew forbidden")
 						}
@@ -45,8 +65,6 @@ func TestRenewFailureScopes(t *testing.T) {
 								return nil
 							case "inconsistent":
 								return startRedisError("TASKQ_RENEW_INCONSISTENT task bad: missing lease")
-							case "network":
-								return io.EOF
 							}
 						}
 						cmd.(*redis.Cmd).SetVal(int64(1))
@@ -96,7 +114,6 @@ func TestRenewFailureScopes(t *testing.T) {
 				synctest.Wait()
 				time.Sleep(2 * time.Second)
 				synctest.Wait()
-				global := mode == "global" || mode == "invalid"
 				fatal := global || mode == "inconsistent"
 				wantRecords := 2
 				if mode == "rejected" || mode == "inconsistent" {
@@ -105,7 +122,7 @@ func TestRenewFailureScopes(t *testing.T) {
 						t.Fatal("per-task cancellation scope incorrect")
 					}
 				}
-				if global || mode == "network" {
+				if global || tc.transient {
 					for _, ctx := range contexts {
 						if ctx.Err() != nil {
 							t.Fatal("global/network failure canceled handler")
@@ -125,6 +142,9 @@ func TestRenewFailureScopes(t *testing.T) {
 						t.Fatal("fatal renew not notified")
 					}
 					err := <-s.Errors()
+					if tc.networkErr != nil && !errors.Is(err, tc.networkErr) {
+						t.Fatalf("fatal lost network error: %v", err)
+					}
 					if mode == "inconsistent" && (!errors.Is(err, redisstore.ErrRenewInconsistent) || !strings.Contains(err.Error(), "bad")) {
 						t.Fatal(err)
 					}
@@ -159,7 +179,7 @@ func TestRenewFailureScopes(t *testing.T) {
 						counts[<-requests]++
 					}
 					wantBad := 1
-					if mode == "network" {
+					if tc.transient {
 						wantBad = 2
 					}
 					if counts["bad"] != wantBad || counts["healthy"] != 2 {

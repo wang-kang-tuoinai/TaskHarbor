@@ -230,14 +230,14 @@ func TestExecutionKnownLossAtReportingBoundary(t *testing.T) {
 				if !ok {
 					t.Fatal("execution not registered")
 				}
-				cancel := record.cancel
-				// 暂停真实撤权中“已知禁止上报”与 context 取消之间的窗口。监督仍用真实 context，
-				// 不会有 ctx.Done 供 select 提前选择；超时或结果分支必须自己检查禁止标记。
-				record.cancel = func(cause error) { close(known); <-allowCancel; cancel(cause) }
+				cancelReports := record.cancelReports
+				// 暂停真实撤销在停止上报之后、取消 Handler 之前。结果或超时分支必须
+				// 检查 reportCtx，因为此时 Handler 的 ctx.Done 尚未就绪。
+				record.cancelReports = func() { cancelReports(); close(known); <-allowCancel }
 				go func() { defer close(revoked); s.revokeExecution(key, record, errExecutionLost) }()
 				<-known
-				if ctx.Err() != nil {
-					t.Fatal("barrier canceled context too early")
+				if record.reportCtx.Err() != context.Canceled || ctx.Err() != nil {
+					t.Fatal("reporting must stop before handler cancellation")
 				}
 				if mode == "timeout" {
 					time.Sleep(time.Second)
