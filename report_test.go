@@ -43,8 +43,11 @@ func TestReportingRetriesKeepResultAndEligibility(t *testing.T) {
 					if _, ok := s.getExecution(key); !ok {
 						t.Error("normal reporting lost renew eligibility")
 					}
-					if len(calls) < 3 {
-						return io.EOF
+					switch len(calls) {
+					case 1:
+						return &net.DNSError{Err: "lookup timeout", IsTimeout: true}
+					case 2:
+						return &net.DNSError{Err: "lookup unavailable", IsTemporary: true}
 					}
 					cmd.(*redis.Cmd).SetVal(int64(1))
 					return nil
@@ -151,6 +154,73 @@ func errorMessageCaseName(message string) string {
 	return "UTF8-truncated"
 }
 
+func TestExecutionSelectedReportPropagatesVisibleParentCause(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result executionResult
+	}{
+		{"result", executionResult{result: []byte(`"ok"`)}},
+		{"timeout", executionResult{err: context.DeadlineExceeded}},
+		{"unknown-handler", executionResult{err: errors.New("no handler registered")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			parent, cancelParent := context.WithCancelCause(context.Background())
+			defer cancelParent(nil)
+			handlerCtx, cancelHandler := context.WithCancelCause(parent)
+			defer cancelHandler(nil)
+			reportCtx, cancelReports := context.WithCancel(context.Background())
+			defer cancelReports()
+			record := &execution{reportCtx: reportCtx, cancelReports: cancelReports}
+			s.onComplete = func(context.Context, *execution, executionKey, []byte) { t.Error("completed after parent revoked") }
+			s.onFailure = func(context.Context, *execution, executionKey, error) {
+				t.Error("reported failure after parent revoked")
+			}
+
+			// 经过已选定分支的共同入口，不依赖 select 选中哪个就绪信号。
+			// 此时还没有上报的 AfterFunc，关闭 reportCtx 必须由调用边界同步完成。
+			cancelParent(fmt.Errorf("parent revoked: %w", errExecutionCanceled))
+			if tc.name == "timeout" {
+				cancelHandler(context.DeadlineExceeded)
+			}
+			s.reportExecutionResult(handlerCtx, record, executionKey{"task", "token"}, tc.result)
+			if reportCtx.Err() != context.Canceled {
+				t.Fatal("visible parent cause did not synchronously stop reporting")
+			}
+		})
+	}
+}
+
+func TestReportingUnregistersParentCancellationAfterCompletion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newTestServer(t)
+		parent, cancelParent := context.WithCancelCause(context.Background())
+		defer cancelParent(nil)
+		handlerCtx, cancelHandler := context.WithCancelCause(parent)
+		defer cancelHandler(nil)
+		reportCtx, cancelReports := context.WithCancel(context.Background())
+		defer cancelReports()
+		record := &execution{reportCtx: reportCtx, cancelReports: cancelReports}
+		calls := 0
+		s.reportClient.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
+			calls++
+			cmd.(*redis.Cmd).SetVal(int64(1))
+			return nil
+		}})
+		s.complete(handlerCtx, record, executionKey{"task", "token"}, nil)
+		if calls != 1 || handlerCtx.Err() != nil {
+			t.Fatalf("completion did not finish with a live handler context: calls=%d, cause=%v", calls, context.Cause(handlerCtx))
+		}
+
+		// 保持上报 context 可观察。父取消确实传播给 Handler，但已结束的上报不再订阅它。
+		cancelParent(errExecutionLost)
+		synctest.Wait()
+		if context.Cause(handlerCtx) != errExecutionLost || reportCtx.Err() != nil {
+			t.Fatal("completed report retained its parent cancellation callback")
+		}
+	})
+}
+
 func TestReportingCancellationStopsNextRequest(t *testing.T) {
 	for _, mode := range []string{"lost", "canceled", "inconsistent", "parent", "abort", "timeout-then-lost", "inflight-lost"} {
 		t.Run(mode, func(t *testing.T) {
@@ -162,6 +232,7 @@ func TestReportingCancellationStopsNextRequest(t *testing.T) {
 				release := make(chan struct{})
 				inflight := make(chan struct{})
 				allowReply := make(chan struct{})
+				var handlerCtx context.Context
 				calls := 0
 				s.reportClient.AddHook(submitHook{process: func(ctx context.Context, _ redis.Cmder) error {
 					calls++
@@ -174,6 +245,7 @@ func TestReportingCancellationStopsNextRequest(t *testing.T) {
 				}})
 				if err := s.HandleFunc("job", func(ctx context.Context, _ *Task) error {
 					if mode == "timeout-then-lost" {
+						handlerCtx = ctx
 						<-release
 					}
 					return nil
@@ -193,6 +265,12 @@ func TestReportingCancellationStopsNextRequest(t *testing.T) {
 				if mode == "timeout-then-lost" {
 					time.Sleep(time.Second)
 					synctest.Wait()
+					// 本地超时已取消子 context。父取消不能覆盖首个原因，须显式撤销。
+					cancelParent(errExecutionLost)
+					synctest.Wait()
+					if context.Cause(handlerCtx) != context.DeadlineExceeded || record.reportCtx.Err() != nil {
+						t.Fatal("late parent cancellation replaced the first handler cause or stopped the timeout report")
+					}
 				}
 				if mode == "inflight-lost" {
 					<-inflight
@@ -206,6 +284,12 @@ func TestReportingCancellationStopsNextRequest(t *testing.T) {
 					s.revokeExecution(key, record, errExecutionCanceled)
 				case "inconsistent":
 					s.revokeExecution(key, record, errExecutionInconsistent)
+				case "timeout-then-lost":
+					record.cancel(fmt.Errorf("late revocation: %w", errExecutionLost))
+					record.cancel(errExecutionLost)
+					if context.Cause(handlerCtx) != context.DeadlineExceeded || record.reportCtx.Err() != context.Canceled {
+						t.Fatal("explicit revocation did not stop reporting independently of the first handler cause")
+					}
 				default:
 					s.revokeExecution(key, record, errExecutionLost)
 				}
@@ -235,7 +319,7 @@ func TestReportingCancellationStopsNextRequest(t *testing.T) {
 }
 
 func TestReportingOutcomesAndDiagnostics(t *testing.T) {
-	for _, mode := range []string{"success", "rejected", "unknown-rejected", "exhausted", "permission", "invalid", "inconsistent", "permanent-dns", "invalid-address"} {
+	for _, mode := range []string{"success", "rejected", "unknown-rejected", "exhausted", "permission", "invalid", "inconsistent", "dns-not-found", "address", "invalid-address"} {
 		t.Run(mode, func(t *testing.T) {
 			var output bytes.Buffer
 			previous := slog.Default()
@@ -251,10 +335,12 @@ func TestReportingOutcomesAndDiagnostics(t *testing.T) {
 						return io.EOF
 					case "permission":
 						return startRedisError("NOPERM forbidden")
-					case "permanent-dns":
+					case "dns-not-found":
 						return &net.DNSError{Err: "no such host", Name: "invalid.example", IsNotFound: true}
-					case "invalid-address":
+					case "address":
 						return &net.AddrError{Err: "missing port", Addr: "invalid"}
+					case "invalid-address":
+						return fmt.Errorf("dial Redis: %w", net.InvalidAddrError("invalid address"))
 					case "invalid":
 						cmd.(*redis.Cmd).SetVal("bad")
 						return nil
@@ -283,7 +369,7 @@ func TestReportingOutcomesAndDiagnostics(t *testing.T) {
 				<-done
 				wantCalls := 1
 				wantLevel := "DEBUG"
-				fatal := mode == "permission" || mode == "invalid" || mode == "inconsistent" || mode == "permanent-dns" || mode == "invalid-address"
+				fatal := mode == "permission" || mode == "invalid" || mode == "inconsistent" || mode == "dns-not-found" || mode == "address" || mode == "invalid-address"
 				if mode == "unknown-rejected" {
 					wantCalls = 2
 					wantLevel = "WARN"

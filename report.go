@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -47,7 +46,7 @@ func (s *server) reportFailure(ctx context.Context, record *execution, key execu
 func (s *server) report(ctx context.Context, record *execution, key executionKey, operation string, call func(context.Context) (bool, error)) {
 	// 任务 context 只传播已确认禁止上报的原因，本地执行超时不能取消失败上报。
 	stop := context.AfterFunc(ctx, func() {
-		if reportingForbidden(ctx) {
+		if forbidsReporting(context.Cause(ctx)) {
 			record.cancelReports()
 		}
 	})
@@ -73,7 +72,7 @@ func (s *server) report(ctx context.Context, record *execution, key executionKey
 		if errors.Is(err, context.Canceled) && s.reportingStopped(ctx, record) {
 			return
 		}
-		if !retryableReportError(err) {
+		if !transientRedisError(err) {
 			slog.Error("task report failed", "operation", operation, "task_id", key.taskID, "attempts", attempt, "error", err)
 			s.reportFatal(err)
 			return
@@ -99,22 +98,12 @@ func (s *server) report(ctx context.Context, record *execution, key executionKey
 	}
 }
 
-func retryableReportError(err error) bool {
-	// 永久解析或地址配置错误在请求发出前就已明确；不能当作结果未知耗尽预算。
-	var dns *net.DNSError
-	if errors.As(err, &dns) && (dns.IsNotFound || !dns.IsTimeout && !dns.IsTemporary) {
-		return false
-	}
-	var address *net.AddrError
-	var invalid net.InvalidAddrError
-	if errors.As(err, &address) || errors.As(err, &invalid) {
-		return false
-	}
-	return transientRedisError(err)
-}
-
 func (s *server) reportingStopped(ctx context.Context, record *execution) bool {
-	if record.reportForbidden.Load() || reportingForbidden(ctx) || record.reportCtx.Err() != nil {
+	// 父取消原因可能已可见，而 AfterFunc 还未获调度。调用边界须同步停止上报。
+	if forbidsReporting(context.Cause(ctx)) {
+		record.cancelReports()
+	}
+	if record.reportCtx.Err() != nil {
 		return true
 	}
 	select {

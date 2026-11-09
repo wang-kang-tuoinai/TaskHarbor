@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -60,12 +59,11 @@ type executionKey struct {
 	attemptToken string
 }
 
-// execution 保存续租资格，不证明租约有效或 Renew 正在运行；除原子禁止标记外字段不可变。
+// execution 保存续租资格，不证明租约有效或 Renew 正在运行。登记后字段不可变。
 // 请在表锁之外调用 cancel。
 type execution struct {
 	executionTimeout time.Duration
 	cancel           context.CancelCauseFunc
-	reportForbidden  atomic.Bool     // 超时为首个取消原因时，后来已知失权仍须禁止新上报。
 	reportCtx        context.Context // 独立于 Handler 超时及 Claim/Renew，已知撤销可中断上报等待。
 	cancelReports    context.CancelFunc
 }

@@ -60,8 +60,6 @@ func (s *server) renewLoop() {
 }
 
 func (s *server) revokeExecution(key executionKey, record *execution, cause error) {
-	// context 只保留首个取消原因；独立标记保证较晚失权也不会被先发生的超时遮蔽。
-	record.reportForbidden.Store(true)
 	record.cancel(cause) // 取消回调必须在表锁外执行。
 	s.deleteExecution(key)
 }
