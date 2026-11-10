@@ -46,6 +46,7 @@ func integrationServer(t *testing.T, rdb *redis.Client, opts ...Option) *server 
 	s := public.(*server)
 	t.Cleanup(func() {
 		s.cancelRenew()
+		s.cancelReclaim()
 		s.mu.Lock()
 		started := s.ownerID != ""
 		s.mu.Unlock()
@@ -55,6 +56,11 @@ func integrationServer(t *testing.T, rdb *redis.Client, opts ...Option) *server 
 			case <-s.renewDone:
 			case <-time.After(3 * time.Second):
 				t.Error("renew loop did not stop during cleanup")
+			}
+			select {
+			case <-s.reclaimDone:
+			case <-time.After(4 * time.Second):
+				t.Error("reclaim loop did not stop during cleanup")
 			}
 		} else {
 			s.cancelClaim()

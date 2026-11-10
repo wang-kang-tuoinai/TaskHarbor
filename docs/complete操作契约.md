@@ -134,7 +134,7 @@ applied 仅在 error 为 nil 时有确定含义。收到拒绝不等于 handler 
 - 初版没有本地租约有效期维护；网络异常时旧 handler 可能继续运行，Redis 仍通过状态、token 和 score 拒绝失效上报。
 - Redis 不按 execution_timeout_ms 强制拒绝所有迟到成功，本地暂停、处理延迟和在途请求的限制与 Submit、Claim 一致。
 
-本轮不实现 Reclaim、Cancel 或公开退出；上报耗尽后遗留 running 不承诺自动回收。上报并发可能超过 Handler 并发，且目前没有额外限流。
+上报耗尽后仍有完整执行索引的 running 记录，由正常运行的回收循环在租约到期后处理。上报并发可能超过 Handler 并发，目前没有额外限流。[Reclaim 契约](Reclaim操作契约.md)
 
 ## 10. 验收场景
 
@@ -152,4 +152,4 @@ applied 仅在 error 为 nil 时有确定含义。收到拒绝不等于 handler 
 - 上报期间发生失权、已生效取消、abort 或一致性撤销：不再发起下一次请求；超时失败可在 Handler context 已取消后发起独立预算请求。
 - 结果分支选定后越过执行超时时点，不切换为超时失败；Handler 已退出时槽释放而监督和续租资格仍可保留，最终清理。
 - 不可恢复错误停止领取但不停止其他任务续租；网络耗尽不停止全实例；日志级别、必要字段和敏感正文排除符合第 6.2 节。
-- 与未实现的 Cancel/Reclaim 的竞争通过受控状态迁移验证，不宣称端到端取消或回收已实现。
+- Cancel 竞争使用受控状态迁移验证。已实现的回收链路使用真实 Redis 验证旧 token 的迟到上报会被拒绝。[Reclaim 集成测试](../reclaim_server_integration_test.go)

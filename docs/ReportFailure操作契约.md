@@ -120,7 +120,7 @@ retry_delay_ms 省略时由 Submit 规范化为 30 秒，最小 15 秒；不得�
 - Lua 错误不自动回滚此前写入。部分写入后的自动检测、对账和修复不属于第一版；移除了 lease 却未完成迁移等异常不能承诺由普通回收器发现。
 - execution_timeout_ms 仅在 Server 本地控制，不保存 execution_deadline_at。初版也不在本地维护租约有效期，相关保护明确留待后续。
 
-本轮不实现 Reclaim，因此成功进入 retry_wait 只表示已安排等待，不会自动重新入队；上报耗尽后遗留 running 也不承诺自动回收。Handler 退出即释放槽，上报中的任务数可能超过 Handler 并发数，本轮不增加独立上报并发限制。
+正常运行的回收循环将到期 retry_wait 重新入队，也负责完整 running 记录的租约回收。Handler 退出即释放槽，上报中的任务数可能超过 Handler 并发数，目前没有独立上报并发限制。[Reclaim 契约](Reclaim操作契约.md)
 
 ## 10. 验收场景
 
