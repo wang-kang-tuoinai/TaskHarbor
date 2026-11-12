@@ -28,6 +28,7 @@ func (s *server) Start() error {
 	s.mu.Unlock()
 	go s.claimLoop()
 	go s.renewLoop()
+	go s.reclaimLoop()
 	return nil
 }
 
@@ -61,7 +62,7 @@ func (s *server) claimLoop() {
 				return
 			}
 			if transientRedisError(err) {
-				if !waitClaim(s.claimCtx, backoff) {
+				if !waitContext(s.claimCtx, backoff) {
 					return
 				}
 				backoff = min(backoff*2, claimBackoffMax)
@@ -73,7 +74,7 @@ func (s *server) claimLoop() {
 		backoff = claimBackoffInitial
 		if claimed == nil {
 			<-s.slots
-			if !waitClaim(s.claimCtx, claimPollInterval) {
+			if !waitContext(s.claimCtx, claimPollInterval) {
 				return
 			}
 			continue
@@ -91,7 +92,7 @@ func (s *server) claimLoop() {
 }
 
 func (s *server) reportFatal(err error) {
-	// 故障处理不能放入 Once：后续 Renew 故障即使不通知，也仍须停用对应循环。
+	// Once 仅限制通知次数，各调用方仍负责停止受影响的循环。
 	s.cancelClaim()
 	s.fatalOnce.Do(func() { s.errors <- err })
 }
@@ -116,14 +117,14 @@ func transientRedisError(err error) bool {
 		errors.Is(err, net.ErrClosed) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, redis.ErrPoolTimeout)
 }
 
-func waitClaim(ctx context.Context, delay time.Duration) bool {
+func waitContext(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
 	case <-timer.C:
-		return true
+		return ctx.Err() == nil
 	}
 }
 

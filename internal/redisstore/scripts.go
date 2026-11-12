@@ -33,3 +33,16 @@ var completeScript = redis.NewScript(reportAuthoritySource + "\n" + completeSour
 var failureSource string
 
 var failureScript = redis.NewScript(reportAuthoritySource + "\n" + failureSource)
+
+//go:embed scripts/reclaim_candidates.lua
+var reclaimCandidatesSource string
+
+//go:embed scripts/reclaim_leases.lua
+var reclaimLeasesSource string
+
+var reclaimLeasesScript = redis.NewScript(reclaimCandidatesSource + "\n" + reclaimLeasesSource)
+
+//go:embed scripts/schedule_retries.lua
+var scheduleRetriesSource string
+
+var scheduleRetriesScript = redis.NewScript(reclaimCandidatesSource + "\n" + scheduleRetriesSource)

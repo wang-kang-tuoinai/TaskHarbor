@@ -46,6 +46,11 @@ func (e startRedisError) RedisError()   {}
 
 func newStartServer(t *testing.T, process func(context.Context, redis.Cmder) error, opts ...Option) *server {
 	t.Helper()
+	return newStartServerWithReclaim(t, process, nil, opts...)
+}
+
+func newStartServerWithReclaim(t *testing.T, process, reclaim func(context.Context, redis.Cmder) error, opts ...Option) *server {
+	t.Helper()
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { _ = rdb.Close() })
 	rdb.AddHook(submitHook{process: process})
@@ -57,17 +62,24 @@ func newStartServer(t *testing.T, process func(context.Context, redis.Cmder) err
 	// 本夹具隔离 Claim/Renew 调度；真实上报由独立的报告测试安装 Hook 或使用 Redis 验收。
 	s.onComplete = func(context.Context, *execution, executionKey, []byte) {}
 	s.onFailure = func(context.Context, *execution, executionKey, error) {}
-	// 当前 go-redis 的 WithTimeout 共享池但不复制命令 Hook；两个测试调用处分别安装。
+	// go-redis 的 WithTimeout 共享池但不复制命令 Hook，各包装分别安装。
 	s.renewClient.AddHook(submitHook{process: process})
+	if reclaim == nil {
+		s.cancelReclaim() // 既有假时钟测试只观察 Claim/Renew，不能发出真实 Redis 请求。
+	} else {
+		s.reclaimClient.AddHook(submitHook{process: reclaim})
+	}
 	t.Cleanup(func() {
 		s.cancelClaim()
 		s.cancelRenew()
+		s.cancelReclaim()
 		s.mu.Lock()
 		started := s.ownerID != ""
 		s.mu.Unlock()
 		if started {
 			<-s.claimDone
 			<-s.renewDone
+			<-s.reclaimDone
 		}
 		close(s.abort)
 	})

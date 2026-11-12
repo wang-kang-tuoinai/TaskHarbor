@@ -74,19 +74,19 @@ type Server interface {
 	// HandleFunc 在启动开始前注册任务类型。重复注册会返回错误，
 	// 并保留原有的 handler。
 	HandleFunc(taskType string, fn HandlerFunc) error
-	// Start 封存注册并启动独立领取、续租循环，非阻塞返回；对象不能重复启动。
+	// Start 封存注册并启动独立的领取、续租和回收循环，非阻塞返回；对象不能重复启动。
 	Start() error
-	// Errors 供单个调用方接收 Claim/Renew/结果上报首个导致停止领取的后台致命错误。
+	// Errors 供单个调用方接收首个导致停止领取的后台致命错误。
 	// channel 不关闭来表达退出，收到通知不表示已有任务或整个服务已退出。
 	Errors() <-chan error
 }
 
 // server 是 Server 的内部实现，必须通过 NewServer 构造，且不得被复制。
-// 已接通最小 Start 与单轮本地执行监督，完整退出生命周期尚未实现。
 type server struct {
 	redisClient     *redis.Client
 	renewClient     *redis.Client // WithTimeout 包装共享调用方连接池，不得 Close。
 	reportClient    *redis.Client // 同样共享调用方池，独立使用上报的 I/O 预算，不得 Close。
+	reclaimClient   *redis.Client // 共享调用方池，使用独立回收预算，不得 Close。
 	slots           chan struct{}
 	leaseDuration   time.Duration // Claim/Renew 的有效期从 Redis 当前时间起算。
 	renewInterval   time.Duration
@@ -113,6 +113,9 @@ type server struct {
 	renewCtx        context.Context
 	cancelRenew     context.CancelFunc
 	renewDone       chan struct{}
+	reclaimCtx      context.Context
+	cancelReclaim   context.CancelFunc
+	reclaimDone     chan struct{}
 	newAttemptToken func() (string, error) // 独立的随机性接缝；测试在 Start 前替换。
 }
 
@@ -240,7 +243,7 @@ func WithReclaimInterval(d time.Duration) Option {
 
 // NewServer 只构造本地状态，不发起 Redis 请求或启动 goroutine。
 // 调用方须以 MaxRetries=-1 创建 rdb，并负责关闭它；平台不修改共享配置。
-// ContextTimeoutEnabled 必须为 true，使 Renew 的请求截止时间约束实际网络等待。
+// ContextTimeoutEnabled 必须为 true，使请求截止时间约束实际网络等待。
 func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	if rdb == nil {
 		return nil, errors.New("rdb is required")
@@ -250,7 +253,7 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		return nil, errors.New("Redis automatic retries must be disabled: construct client with MaxRetries=-1")
 	}
 	if !rdb.Options().ContextTimeoutEnabled {
-		return nil, errors.New("Redis ContextTimeoutEnabled must be true for bounded Renew requests")
+		return nil, errors.New("Redis ContextTimeoutEnabled must be true for bounded background requests")
 	}
 	cfg := defaultServerConfig()
 	for _, opt := range opts {
@@ -266,10 +269,12 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	}
 	claimCtx, cancelClaim := context.WithCancel(context.Background())
 	renewCtx, cancelRenew := context.WithCancel(context.Background())
+	reclaimCtx, cancelReclaim := context.WithCancel(context.Background())
 	s := &server{
 		redisClient:     rdb,
 		renewClient:     boundedRedisClient(rdb, cfg.renewInterval),
 		reportClient:    boundedRedisClient(rdb, reportRequestTimeout),
+		reclaimClient:   boundedRedisClient(rdb, reclaimRequestTimeout),
 		slots:           make(chan struct{}, cfg.concurrency),
 		leaseDuration:   cfg.leaseDuration,
 		renewInterval:   cfg.renewInterval,
@@ -284,6 +289,9 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		renewCtx:        renewCtx,
 		cancelRenew:     cancelRenew,
 		renewDone:       make(chan struct{}),
+		reclaimCtx:      reclaimCtx,
+		cancelReclaim:   cancelReclaim,
+		reclaimDone:     make(chan struct{}),
 		errors:          make(chan error, 1),
 		newAttemptToken: newAttemptToken,
 	}

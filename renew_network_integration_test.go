@@ -73,12 +73,24 @@ func TestReportingTCPDeadlineOptionsAndSharedPool(t *testing.T) {
 	}
 }
 
+func TestReclaimTCPDeadlineOptionsAndSharedPool(t *testing.T) {
+	for _, operation := range []string{"reclaim leases", "schedule retries"} {
+		t.Run(operation, func(t *testing.T) { testServerTCPDeadline(t, operation) })
+	}
+}
+
 func testServerTCPDeadline(t *testing.T, operation string) {
 	t.Helper()
-	for _, tc := range []struct {
+	type deadlineCase struct {
 		name                string
 		read, write, budget time.Duration
-	}{{"deadline", 2 * time.Second, 2 * time.Second, 80 * time.Millisecond}, {"shorter-io", 100 * time.Millisecond, 2 * time.Second, 400 * time.Millisecond}, {"disabled-io", -2, -2, 80 * time.Millisecond}} {
+	}
+	cases := []deadlineCase{{"deadline", 2 * time.Second, 2 * time.Second, 80 * time.Millisecond}, {"shorter-io", 100 * time.Millisecond, 2 * time.Second, 400 * time.Millisecond}, {"disabled-io", -2, -2, 80 * time.Millisecond}}
+	reclaim := operation == "reclaim leases" || operation == "schedule retries"
+	if reclaim {
+		cases = []deadlineCase{{"deadline", 6 * time.Second, 6 * time.Second, 3 * time.Second}, {"shorter-io", 100 * time.Millisecond, 6 * time.Second, 3 * time.Second}}
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -152,10 +164,12 @@ func testServerTCPDeadline(t *testing.T, operation string) {
 			}
 			s := public.(*server)
 			client := s.renewClient
-			if operation != "renew" {
+			if reclaim {
+				client = s.reclaimClient
+			} else if operation != "renew" {
 				client = s.reportClient
 			}
-			t.Cleanup(func() { s.cancelClaim(); s.cancelRenew() })
+			t.Cleanup(func() { s.cancelClaim(); s.cancelRenew(); s.cancelReclaim() })
 			if !unchanged() {
 				t.Fatal("WithTimeout changed caller configuration")
 			}
@@ -166,7 +180,7 @@ func testServerTCPDeadline(t *testing.T, operation string) {
 				t.Fatal(err)
 			}
 			if accepted.Load() != 1 || rdb.PoolStats().TotalConns != 1 || client.PoolStats().TotalConns != 1 {
-				t.Fatal("renew wrapper created another pool or connection")
+				t.Fatal("timeout wrapper created another pool or connection")
 			}
 			if tc.read > 0 && client.Options().ReadTimeout > tc.read {
 				t.Fatal("wrapper lengthened shorter I/O timeout")
@@ -184,6 +198,10 @@ func testServerTCPDeadline(t *testing.T, operation string) {
 				applied, err = redisstore.Complete(ctx, client, redisstore.CompleteParams{TaskID: "task", AttemptToken: "token"})
 			case "ReportFailure":
 				applied, err = redisstore.ReportFailure(ctx, client, redisstore.FailureParams{TaskID: "task", AttemptToken: "token", ErrorMessage: "error"})
+			case "reclaim leases":
+				err = redisstore.ReclaimLeases(ctx, client)
+			case "schedule retries":
+				err = redisstore.ScheduleRetries(ctx, client)
 			}
 			elapsed := time.Since(began)
 			var networkErr net.Error
@@ -192,14 +210,22 @@ func testServerTCPDeadline(t *testing.T, operation string) {
 			}
 			select {
 			case actual := <-deadlines:
-				if actual.IsZero() || actual.After(deadline) {
-					t.Fatalf("network deadline=%v request deadline=%v", actual, deadline)
+				latest := deadline
+				if tc.read > 0 && tc.read < tc.budget {
+					latest = began.Add(tc.read + 100*time.Millisecond)
+				}
+				if actual.IsZero() || actual.After(latest) {
+					t.Fatalf("network deadline=%v latest allowed=%v", actual, latest)
 				}
 			default:
 				t.Fatal("request did not install a real socket deadline")
 			}
 			// 校验截止时间和宽松的停滞上限；不承诺墙钟上严格按期限返回。
-			if elapsed > time.Second {
+			limit := time.Second
+			if reclaim {
+				limit += min(tc.budget, tc.read)
+			}
+			if elapsed > limit {
 				t.Fatalf("request stalled beyond scheduling tolerance: %v", elapsed)
 			}
 			armed.Store(false)
