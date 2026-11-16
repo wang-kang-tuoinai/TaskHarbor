@@ -6,11 +6,12 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 | --- | --- | --- |
 | [0001](0001-submit-client-and-storage.md) | Client Submit 接口与 Redis 存储边界 | 已接受 |
 | [0002](0002-claim-failure-and-retry-policy.md) | Claim 的重试边界与异常处理 | 已接受；客户端构造条件由 0005 部分替代 |
-| [0003](0003-execution-supervision-and-lifecycle.md) | 执行监督、资源归属与分阶段生命周期 | 已接受；执行表与 Errors 定义由 0004 部分替代 |
+| [0003](0003-execution-supervision-and-lifecycle.md) | 执行监督、资源归属与分阶段生命周期 | 已接受；执行表与 Errors 定义由 0004、完整退出语义由 0008 部分替代 |
 | [0004](0004-renew-failure-and-eligibility.md) | 续租资格与续租故障的影响范围 | 已接受 |
 | [0005](0005-renew-client-deadlines.md) | 续租客户端截止时间前置条件 | 已接受 |
 | [0006](0006-result-reporting-lifecycle.md) | 结果上报的生命周期与故障范围 | 已接受 |
 | [0007](0007-reclaim-batches-and-failure-scope.md) | Reclaim 的批次边界、检测范围与故障隔离 | 已接受 |
+| [0008](0008-shutdown-lifecycle.md) | Shutdown 的排空、强制取消与实际停止 | 已接受 |
 
 0002、0003 补充已讨论的 Server 设计，不替代 0001。0003 区分本轮实施边界与已确认但延期实现的退出、续租语义；“已接受”不表示代码已经实现。
 
@@ -21,3 +22,5 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 0006 补充真实结果上报的预算、取消衔接、资源归属与故障范围，不代表结果上报已经实现。
 
 0007 确定 Reclaim 的整批写前校验、pending 检测边界及独立调度和故障隔离，不改变既有 Renew、结果上报行为；实现状态仍以代码与验收为准。
+
+0008 细化并部分替代 0003 的完整退出语义，补充 0006 的统一上报取消来源。Shutdown 的设计已接受，实现与验证状态另行记录。
