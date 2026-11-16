@@ -65,8 +65,9 @@ func integrationServer(t *testing.T, rdb *redis.Client, opts ...Option) *server 
 		} else {
 			s.cancelClaim()
 		}
-		close(s.abort)
+		s.forceStop()
 		awaitStartExecutions(t, s)
+		s.executionWG.Wait()
 	})
 	return s
 }

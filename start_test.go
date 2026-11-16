@@ -81,7 +81,8 @@ func newStartServerWithReclaim(t *testing.T, process, reclaim func(context.Conte
 			<-s.renewDone
 			<-s.reclaimDone
 		}
-		close(s.abort)
+		s.forceStop()
+		s.executionWG.Wait()
 	})
 	return s
 }

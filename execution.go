@@ -29,7 +29,7 @@ type executionResult struct {
 // parent 属于本轮任务，不能使用领取循环的取消 context。
 func (s *server) acceptExecution(parent context.Context, task *Task, key executionKey, timeout time.Duration) (<-chan struct{}, error) {
 	ctx, cancel := context.WithCancelCause(parent)
-	reportCtx, cancelReports := context.WithCancel(context.Background())
+	reportCtx, cancelReports := context.WithCancel(s.reportCtx)
 	record := &execution{executionTimeout: timeout, reportCtx: reportCtx, cancelReports: cancelReports}
 	record.cancel = func(cause error) {
 		// 使用本次撤销的原因，Handler context 可能已保留了更早的超时原因。
@@ -48,7 +48,9 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 	handler := s.handlers[task.Type]
 	s.mu.Unlock()
 	done := make(chan struct{})
+	s.executionWG.Add(1)
 	go func() {
+		defer s.executionWG.Done()
 		defer close(done)
 		defer cancelReports()
 		if s.reportingStopped(ctx, record) {
@@ -67,10 +69,22 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 		}
 		// Handler 只发送一次；监督先退出后，这一个缓冲仍能接纳迟到结果。
 		results := make(chan executionResult, 1)
+		// 强制阶段的关闭与最终启动批准共用短临界区。清理和上报必须在锁外。
+		s.launchMu.Lock()
+		if s.reportingStopped(ctx, record) {
+			s.launchMu.Unlock()
+			s.deleteExecution(key)
+			cancel(nil)
+			<-s.slots
+			return
+		}
 		// 计时紧邻 Handler 启动；登记准备只创建可取消 context，不提前消耗执行时长。
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
+		// 监督仍占有计数，排空等待期间新增 Handler 不会遇到零计数 Add。
+		s.executionWG.Add(1)
 		go func() {
+			defer s.executionWG.Done()
 			// 槽属于实际运行的 Handler；监督超时不能代替其归还。
 			defer func() { <-s.slots }()
 			var result executionResult
@@ -83,6 +97,7 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 			}()
 			result.err = handler(ctx, task)
 		}()
+		s.launchMu.Unlock()
 		select {
 		case result := <-results:
 			s.reportExecutionResult(ctx, record, key, result)

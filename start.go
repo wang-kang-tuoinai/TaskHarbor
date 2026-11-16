@@ -20,12 +20,12 @@ const (
 )
 
 func (s *server) Start() error {
-	if err := s.beginStart(); err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.beginStartLocked(); err != nil {
 		return err
 	}
-	s.mu.Lock()
 	s.status = serverRunning
-	s.mu.Unlock()
 	go s.claimLoop()
 	go s.renewLoop()
 	go s.reclaimLoop()
