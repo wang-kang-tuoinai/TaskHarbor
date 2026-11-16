@@ -29,18 +29,18 @@ type executionResult struct {
 // parent 属于本轮任务，不能使用领取循环的取消 context。
 func (s *server) acceptExecution(parent context.Context, task *Task, key executionKey, timeout time.Duration) (<-chan struct{}, error) {
 	ctx, cancel := context.WithCancelCause(parent)
-	reportCtx, cancelReports := context.WithCancel(s.reportCtx)
-	record := &execution{executionTimeout: timeout, reportCtx: reportCtx, cancelReports: cancelReports}
+	reportCtx, cancelExecutionReports := context.WithCancel(s.reportCtx)
+	record := &execution{executionTimeout: timeout, reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
 	record.cancel = func(cause error) {
 		// 使用本次撤销的原因，Handler context 可能已保留了更早的超时原因。
 		if forbidsReporting(cause) {
-			record.cancelReports()
+			record.cancelExecutionReports()
 		}
 		cancel(cause)
 	}
 	if err := s.addExecution(key, record); err != nil {
 		cancel(nil)
-		cancelReports()
+		cancelExecutionReports()
 		<-s.slots
 		return nil, err
 	}
@@ -52,13 +52,7 @@ func (s *server) acceptExecution(parent context.Context, task *Task, key executi
 	go func() {
 		defer s.executionWG.Done()
 		defer close(done)
-		defer cancelReports()
-		if s.reportingStopped(ctx, record) {
-			s.deleteExecution(key)
-			cancel(nil)
-			<-s.slots
-			return
-		}
+		defer cancelExecutionReports()
 		if handler == nil {
 			// 未启动 Handler 时，槽仍由接收/监督路径归还，不创建虚假的执行协程。
 			<-s.slots

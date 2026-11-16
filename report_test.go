@@ -169,9 +169,9 @@ func TestExecutionSelectedReportPropagatesVisibleParentCause(t *testing.T) {
 			defer cancelParent(nil)
 			handlerCtx, cancelHandler := context.WithCancelCause(parent)
 			defer cancelHandler(nil)
-			reportCtx, cancelReports := context.WithCancel(context.Background())
-			defer cancelReports()
-			record := &execution{reportCtx: reportCtx, cancelReports: cancelReports}
+			reportCtx, cancelExecutionReports := context.WithCancel(context.Background())
+			defer cancelExecutionReports()
+			record := &execution{reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
 			s.onComplete = func(context.Context, *execution, executionKey, []byte) { t.Error("completed after parent revoked") }
 			s.onFailure = func(context.Context, *execution, executionKey, error) {
 				t.Error("reported failure after parent revoked")
@@ -198,9 +198,9 @@ func TestReportingUnregistersParentCancellationAfterCompletion(t *testing.T) {
 		defer cancelParent(nil)
 		handlerCtx, cancelHandler := context.WithCancelCause(parent)
 		defer cancelHandler(nil)
-		reportCtx, cancelReports := context.WithCancel(context.Background())
-		defer cancelReports()
-		record := &execution{reportCtx: reportCtx, cancelReports: cancelReports}
+		reportCtx, cancelExecutionReports := context.WithCancel(context.Background())
+		defer cancelExecutionReports()
+		record := &execution{reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
 		calls := 0
 		s.reportClient.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
 			calls++

@@ -59,7 +59,7 @@ func (s *server) forceStop() {
 	}
 	s.launchMu.Unlock()
 	// 父级取消覆盖已经移出续租表的超时上报，不能用扫描 executions 替代。
-	s.cancelReports()
+	s.cancelAllReports()
 	s.cancelClaim()
 	s.cancelRenew()
 	s.cancelReclaim()
@@ -73,7 +73,7 @@ func (s *server) finishShutdown() {
 	s.cancelReclaim()
 	<-s.renewDone
 	<-s.reclaimDone
-	s.cancelReports()
+	s.cancelAllReports()
 	s.mu.Lock()
 	s.status = serverStopped
 	close(s.shutdownDone)

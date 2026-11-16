@@ -62,10 +62,10 @@ type executionKey struct {
 // execution 保存续租资格，不证明租约有效或 Renew 正在运行。登记后字段不可变。
 // 请在表锁之外调用 cancel。
 type execution struct {
-	executionTimeout time.Duration
-	cancel           context.CancelCauseFunc
-	reportCtx        context.Context // 继承实例级上报取消，独立于 Handler 超时及 Claim/Renew。
-	cancelReports    context.CancelFunc
+	executionTimeout       time.Duration
+	cancel                 context.CancelCauseFunc
+	reportCtx              context.Context // 继承实例级上报取消，独立于 Handler 超时及 Claim/Renew。
+	cancelExecutionReports context.CancelFunc
 }
 
 // Server 是任务平台对外暴露的执行服务接口。内部实现类型未导出，
@@ -102,13 +102,13 @@ type server struct {
 	shutdownDone chan struct{}
 	handlers     map[string]HandlerFunc
 
-	executionsMu  sync.RWMutex
-	executions    map[executionKey]*execution
-	executionWG   sync.WaitGroup // 分别计入监督清理与 Handler 实际退出，不代表执行权。
-	launchMu      sync.Mutex     // 使最终 Handler 启动批准与关闭 abort 具有明确先后。
-	abort         chan struct{}  // 强制阶段广播；关闭由 launchMu 串行化。
-	reportCtx     context.Context
-	cancelReports context.CancelFunc
+	executionsMu     sync.RWMutex
+	executions       map[executionKey]*execution
+	executionWG      sync.WaitGroup // 分别计入监督清理与 Handler 实际退出，不代表执行权。
+	launchMu         sync.Mutex     // 使最终 Handler 启动批准与关闭 abort 具有明确先后。
+	abort            chan struct{}  // 强制阶段广播；关闭由 launchMu 串行化。
+	reportCtx        context.Context
+	cancelAllReports context.CancelFunc
 
 	// 构造时绑定真实上报；监督测试可在启动执行前替换以观察唯一结果分支。
 	onComplete func(context.Context, *execution, executionKey, []byte)
@@ -283,34 +283,34 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	claimCtx, cancelClaim := context.WithCancel(context.Background())
 	renewCtx, cancelRenew := context.WithCancel(context.Background())
 	reclaimCtx, cancelReclaim := context.WithCancel(context.Background())
-	reportCtx, cancelReports := context.WithCancel(context.Background())
+	reportCtx, cancelAllReports := context.WithCancel(context.Background())
 	s := &server{
-		redisClient:     rdb,
-		renewClient:     boundedRedisClient(rdb, cfg.renewInterval),
-		reportClient:    boundedRedisClient(rdb, reportRequestTimeout),
-		reclaimClient:   boundedRedisClient(rdb, reclaimRequestTimeout),
-		slots:           make(chan struct{}, cfg.concurrency),
-		leaseDuration:   cfg.leaseDuration,
-		renewInterval:   cfg.renewInterval,
-		reclaimInterval: cfg.reclaimInterval,
-		status:          serverCreated,
-		shutdownDone:    make(chan struct{}),
-		handlers:        make(map[string]HandlerFunc),
-		executions:      make(map[executionKey]*execution),
-		abort:           make(chan struct{}),
-		reportCtx:       reportCtx,
-		cancelReports:   cancelReports,
-		claimCtx:        claimCtx,
-		cancelClaim:     cancelClaim,
-		claimDone:       make(chan struct{}),
-		renewCtx:        renewCtx,
-		cancelRenew:     cancelRenew,
-		renewDone:       make(chan struct{}),
-		reclaimCtx:      reclaimCtx,
-		cancelReclaim:   cancelReclaim,
-		reclaimDone:     make(chan struct{}),
-		errors:          make(chan error, 1),
-		newAttemptToken: newAttemptToken,
+		redisClient:      rdb,
+		renewClient:      boundedRedisClient(rdb, cfg.renewInterval),
+		reportClient:     boundedRedisClient(rdb, reportRequestTimeout),
+		reclaimClient:    boundedRedisClient(rdb, reclaimRequestTimeout),
+		slots:            make(chan struct{}, cfg.concurrency),
+		leaseDuration:    cfg.leaseDuration,
+		renewInterval:    cfg.renewInterval,
+		reclaimInterval:  cfg.reclaimInterval,
+		status:           serverCreated,
+		shutdownDone:     make(chan struct{}),
+		handlers:         make(map[string]HandlerFunc),
+		executions:       make(map[executionKey]*execution),
+		abort:            make(chan struct{}),
+		reportCtx:        reportCtx,
+		cancelAllReports: cancelAllReports,
+		claimCtx:         claimCtx,
+		cancelClaim:      cancelClaim,
+		claimDone:        make(chan struct{}),
+		renewCtx:         renewCtx,
+		cancelRenew:      cancelRenew,
+		renewDone:        make(chan struct{}),
+		reclaimCtx:       reclaimCtx,
+		cancelReclaim:    cancelReclaim,
+		reclaimDone:      make(chan struct{}),
+		errors:           make(chan error, 1),
+		newAttemptToken:  newAttemptToken,
 	}
 	s.onComplete = s.complete
 	s.onFailure = s.reportFailure
