@@ -62,10 +62,10 @@ type executionKey struct {
 // execution 保存续租资格，不证明租约有效或 Renew 正在运行。登记后字段不可变。
 // 请在表锁之外调用 cancel。
 type execution struct {
-	executionTimeout time.Duration
-	cancel           context.CancelCauseFunc
-	reportCtx        context.Context // 独立于 Handler 超时及 Claim/Renew，已知撤销可中断上报等待。
-	cancelReports    context.CancelFunc
+	executionTimeout       time.Duration
+	cancel                 context.CancelCauseFunc
+	reportCtx              context.Context // 继承实例级上报取消，独立于 Handler 超时及 Claim/Renew。
+	cancelExecutionReports context.CancelFunc
 }
 
 // Server 是任务平台对外暴露的执行服务接口。内部实现类型未导出，
@@ -76,6 +76,10 @@ type Server interface {
 	HandleFunc(taskType string, fn HandlerFunc) error
 	// Start 封存注册并启动独立的领取、续租和回收循环，非阻塞返回；对象不能重复启动。
 	Start() error
+	// Shutdown 停止新领取并等待本实例的执行、上报及后台循环实际结束。
+	// context 到期会请求强制取消并返回其错误；仍存活的工作在返回后继续收尾。
+	// 不关闭调用方的 Redis 客户端，nil 不表示所有任务都成功。
+	Shutdown(ctx context.Context) error
 	// Errors 供单个调用方接收首个导致停止领取的后台致命错误。
 	// channel 不关闭来表达退出，收到通知不表示已有任务或整个服务已退出。
 	Errors() <-chan error
@@ -92,14 +96,19 @@ type server struct {
 	renewInterval   time.Duration
 	reclaimInterval time.Duration
 
-	mu       sync.Mutex // 保护生命周期状态、ownerID 与 handler 注册。
-	ownerID  string
-	status   serverStatus
-	handlers map[string]HandlerFunc
+	mu           sync.Mutex // 保护生命周期状态、ownerID 与 handler 注册。
+	ownerID      string
+	status       serverStatus
+	shutdownDone chan struct{}
+	handlers     map[string]HandlerFunc
 
-	executionsMu sync.RWMutex
-	executions   map[executionKey]*execution
-	abort        chan struct{} // 由未来唯一的生命周期管理方关闭；当前没有公开退出入口。
+	executionsMu     sync.RWMutex
+	executions       map[executionKey]*execution
+	executionWG      sync.WaitGroup // 分别计入监督清理与 Handler 实际退出，不代表执行权。
+	launchMu         sync.Mutex     // 使最终 Handler 启动批准与关闭 abort 具有明确先后。
+	abort            chan struct{}  // 强制阶段广播；关闭由 launchMu 串行化。
+	reportCtx        context.Context
+	cancelAllReports context.CancelFunc
 
 	// 构造时绑定真实上报；监督测试可在启动执行前替换以观察唯一结果分支。
 	onComplete func(context.Context, *execution, executionKey, []byte)
@@ -119,12 +128,16 @@ type server struct {
 	newAttemptToken func() (string, error) // 独立的随机性接缝；测试在 Start 前替换。
 }
 
-// beginStart 在任何订阅或 Claim 之前封存注册。后续的启动代码必须首先调用
-// 它，并在启动失败时清理回到 serverStopped 状态。
-// Server 对象不可重启。
+// beginStart 封存注册并生成实例身份；独立入口供本地启动检查使用。
+// Start 持锁调用相同检查直至循环启动，避免 Shutdown 插入 starting 过渡。
 func (s *server) beginStart() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.beginStartLocked()
+}
+
+// 调用方持有 mu；Start 将检查、状态迁移和循环启动放在同一临界区。
+func (s *server) beginStartLocked() error {
 	if s.status != serverCreated {
 		return errors.New("server has already started")
 	}
@@ -270,30 +283,34 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	claimCtx, cancelClaim := context.WithCancel(context.Background())
 	renewCtx, cancelRenew := context.WithCancel(context.Background())
 	reclaimCtx, cancelReclaim := context.WithCancel(context.Background())
+	reportCtx, cancelAllReports := context.WithCancel(context.Background())
 	s := &server{
-		redisClient:     rdb,
-		renewClient:     boundedRedisClient(rdb, cfg.renewInterval),
-		reportClient:    boundedRedisClient(rdb, reportRequestTimeout),
-		reclaimClient:   boundedRedisClient(rdb, reclaimRequestTimeout),
-		slots:           make(chan struct{}, cfg.concurrency),
-		leaseDuration:   cfg.leaseDuration,
-		renewInterval:   cfg.renewInterval,
-		reclaimInterval: cfg.reclaimInterval,
-		status:          serverCreated,
-		handlers:        make(map[string]HandlerFunc),
-		executions:      make(map[executionKey]*execution),
-		abort:           make(chan struct{}),
-		claimCtx:        claimCtx,
-		cancelClaim:     cancelClaim,
-		claimDone:       make(chan struct{}),
-		renewCtx:        renewCtx,
-		cancelRenew:     cancelRenew,
-		renewDone:       make(chan struct{}),
-		reclaimCtx:      reclaimCtx,
-		cancelReclaim:   cancelReclaim,
-		reclaimDone:     make(chan struct{}),
-		errors:          make(chan error, 1),
-		newAttemptToken: newAttemptToken,
+		redisClient:      rdb,
+		renewClient:      boundedRedisClient(rdb, cfg.renewInterval),
+		reportClient:     boundedRedisClient(rdb, reportRequestTimeout),
+		reclaimClient:    boundedRedisClient(rdb, reclaimRequestTimeout),
+		slots:            make(chan struct{}, cfg.concurrency),
+		leaseDuration:    cfg.leaseDuration,
+		renewInterval:    cfg.renewInterval,
+		reclaimInterval:  cfg.reclaimInterval,
+		status:           serverCreated,
+		shutdownDone:     make(chan struct{}),
+		handlers:         make(map[string]HandlerFunc),
+		executions:       make(map[executionKey]*execution),
+		abort:            make(chan struct{}),
+		reportCtx:        reportCtx,
+		cancelAllReports: cancelAllReports,
+		claimCtx:         claimCtx,
+		cancelClaim:      cancelClaim,
+		claimDone:        make(chan struct{}),
+		renewCtx:         renewCtx,
+		cancelRenew:      cancelRenew,
+		renewDone:        make(chan struct{}),
+		reclaimCtx:       reclaimCtx,
+		cancelReclaim:    cancelReclaim,
+		reclaimDone:      make(chan struct{}),
+		errors:           make(chan error, 1),
+		newAttemptToken:  newAttemptToken,
 	}
 	s.onComplete = s.complete
 	s.onFailure = s.reportFailure

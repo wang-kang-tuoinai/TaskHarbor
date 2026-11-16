@@ -230,10 +230,10 @@ func TestExecutionKnownLossAtReportingBoundary(t *testing.T) {
 				if !ok {
 					t.Fatal("execution not registered")
 				}
-				cancelReports := record.cancelReports
+				cancelExecutionReports := record.cancelExecutionReports
 				// 暂停真实撤销在停止上报之后、取消 Handler 之前。结果或超时分支必须
 				// 检查 reportCtx，因为此时 Handler 的 ctx.Done 尚未就绪。
-				record.cancelReports = func() { cancelReports(); close(known); <-allowCancel }
+				record.cancelExecutionReports = func() { cancelExecutionReports(); close(known); <-allowCancel }
 				go func() { defer close(revoked); s.revokeExecution(key, record, errExecutionLost) }()
 				<-known
 				if record.reportCtx.Err() != context.Canceled || ctx.Err() != nil {

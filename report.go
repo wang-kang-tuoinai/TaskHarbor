@@ -47,7 +47,7 @@ func (s *server) report(ctx context.Context, record *execution, key executionKey
 	// 任务 context 只传播已确认禁止上报的原因，本地执行超时不能取消失败上报。
 	stop := context.AfterFunc(ctx, func() {
 		if forbidsReporting(context.Cause(ctx)) {
-			record.cancelReports()
+			record.cancelExecutionReports()
 		}
 	})
 	defer stop()
@@ -101,7 +101,7 @@ func (s *server) report(ctx context.Context, record *execution, key executionKey
 func (s *server) reportingStopped(ctx context.Context, record *execution) bool {
 	// 父取消原因可能已可见，而 AfterFunc 还未获调度。调用边界须同步停止上报。
 	if forbidsReporting(context.Cause(ctx)) {
-		record.cancelReports()
+		record.cancelExecutionReports()
 	}
 	if record.reportCtx.Err() != nil {
 		return true
