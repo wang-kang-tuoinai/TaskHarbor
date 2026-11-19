@@ -25,7 +25,7 @@ import (
 
 // 每个顶层测试启动独立 Redis，禁用持久化；不连接或清空调用方已有的实例。
 // TASKQ_REDIS_SERVER 可指定可执行文件，否则从 PATH 查找 redis-server。
-func startSubmitRedis(t *testing.T) *redis.Client {
+func startSubmitRedis(t *testing.T, redisArgs ...string) *redis.Client {
 	t.Helper()
 	binary := os.Getenv("TASKQ_REDIS_SERVER")
 	if binary == "" {
@@ -45,7 +45,7 @@ func startSubmitRedis(t *testing.T) *redis.Client {
 	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "redis.log")
-	cmd := exec.Command(binary, "--bind", "127.0.0.1", "--port", strconv.Itoa(port), "--save", "", "--appendonly", "no", "--dir", dir, "--logfile", logPath)
+	cmd := exec.Command(binary, append([]string{"--bind", "127.0.0.1", "--port", strconv.Itoa(port), "--save", "", "--appendonly", "no", "--dir", dir, "--logfile", logPath}, redisArgs...)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

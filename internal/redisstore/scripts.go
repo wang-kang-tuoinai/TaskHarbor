@@ -46,3 +46,8 @@ var reclaimLeasesScript = redis.NewScript(reclaimCandidatesSource + "\n" + recla
 var scheduleRetriesSource string
 
 var scheduleRetriesScript = redis.NewScript(reclaimCandidatesSource + "\n" + scheduleRetriesSource)
+
+//go:embed scripts/cancel_task.lua
+var cancelSource string
+
+var cancelScript = redis.NewScript(cancelSource)

@@ -45,29 +45,14 @@ func integrationServer(t *testing.T, rdb *redis.Client, opts ...Option) *server 
 	}
 	s := public.(*server)
 	t.Cleanup(func() {
-		s.cancelRenew()
-		s.cancelReclaim()
-		s.mu.Lock()
-		started := s.ownerID != ""
-		s.mu.Unlock()
-		if started {
-			stopStartLoop(t, s)
-			select {
-			case <-s.renewDone:
-			case <-time.After(3 * time.Second):
-				t.Error("renew loop did not stop during cleanup")
-			}
-			select {
-			case <-s.reclaimDone:
-			case <-time.After(4 * time.Second):
-				t.Error("reclaim loop did not stop during cleanup")
-			}
-		} else {
-			s.cancelClaim()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = s.Shutdown(ctx)
+		select {
+		case <-s.shutdownDone:
+		case <-time.After(4 * time.Second):
+			t.Error("server did not stop during test cleanup")
 		}
-		s.forceStop()
-		awaitStartExecutions(t, s)
-		s.executionWG.Wait()
 	})
 	return s
 }
@@ -166,7 +151,7 @@ func TestStartRedisLostClaimReply(t *testing.T) {
 	c := integrationClient(t, admin)
 	mustSubmit(t, c, "first", "job", nil)
 	mustSubmit(t, c, "second", "job", nil)
-	var armed, dropped atomic.Bool
+	var commandConn, armed, dropped atomic.Bool
 	expected := []byte("*6\r\n$5\r\nfirst\r\n$3\r\njob\r\n$0\r\n\r\n$7\r\ndefault\r\n$1\r\n1\r\n$5\r\n60000\r\n")
 	rdb := redis.NewClient(&redis.Options{
 		Addr: admin.Options().Addr, MaxRetries: -1, ContextTimeoutEnabled: true, PoolSize: 1, ReadTimeout: time.Second, WriteTimeout: time.Second,
@@ -175,7 +160,11 @@ func TestStartRedisLostClaimReply(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			return &dropSubmitReplyConn{Conn: conn, armed: &armed, dropped: &dropped, expected: expected}, nil
+			// Start 前的 Ping 先创建普通命令连接，订阅连接不参与 Claim 应答注入。
+			if commandConn.CompareAndSwap(false, true) {
+				return &dropSubmitReplyConn{Conn: conn, armed: &armed, dropped: &dropped, expected: expected}, nil
+			}
+			return conn, nil
 		},
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
@@ -200,6 +189,7 @@ func TestStartRedisLostClaimReply(t *testing.T) {
 		generated++
 		switch generated {
 		case 1:
+			armed.Store(true)
 			return "lost-token", nil
 		case 2:
 			close(nextAttempt)
@@ -218,7 +208,6 @@ func TestStartRedisLostClaimReply(t *testing.T) {
 		s.complete(ctx, record, key, result)
 		completed <- struct{}{}
 	}
-	armed.Store(true)
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}
