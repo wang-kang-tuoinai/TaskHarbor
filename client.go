@@ -24,15 +24,15 @@ const (
 )
 
 var (
-	// ErrInvalidArgument 表示 Client 构造或提交参数非法。
+	// ErrInvalidArgument 表示 Client 构造或操作参数非法。
 	ErrInvalidArgument = errors.New("invalid argument")
 	// ErrTaskIDConflict 表示同一 ID 已绑定不同的初始配置。
 	ErrTaskIDConflict = errors.New("task ID content conflict")
-	// ErrStorageData 表示已存配置缺失或存储响应不符合协议；不会自动修复。
+	// ErrStorageData 表示存储数据不一致或响应不符合协议，不会自动修复。
 	ErrStorageData = errors.New("invalid storage data")
 )
 
-// Client 提交任务，持有调用方的 Redis 客户端，可并发使用。
+// Client 提交和取消任务，持有调用方的 Redis 客户端，可并发使用。
 // 必须通过 NewClient 构造；调用方负责配置和关闭 Redis 客户端。
 type Client struct {
 	rdb *redis.Client

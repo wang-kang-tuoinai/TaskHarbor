@@ -147,13 +147,15 @@ func TestShutdownTCPBudgetDoesNotWaitForSocket(t *testing.T) {
 						defer conn.Close()
 						reader := bufio.NewReader(conn)
 						for {
-							parts, err := readRenewTCPCommand(reader)
+							parts, err := readRedisTCPCommand(reader)
 							if err != nil {
 								return
 							}
 							switch strings.ToLower(parts[0]) {
 							case "hello":
 								_, _ = io.WriteString(conn, "-ERR unknown command 'hello'\r\n")
+							case "subscribe":
+								_, _ = io.WriteString(conn, cancelSubscribeAck(parts[1]))
 							case "evalsha", "eval":
 								isClaim := parts[3] == "taskq:default:pending"
 								if operation == "claim" || !isClaim {
