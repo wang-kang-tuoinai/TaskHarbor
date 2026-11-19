@@ -20,7 +20,7 @@ func TestCancelServerRedisMatchesAttemptAndRetainsSlot(t *testing.T) {
 	rdb := startSubmitRedis(t)
 	ctx := context.Background()
 	client := integrationClient(t, rdb)
-	const id, fence, next = "task\uFFFD", "ordered-fence", "next-task"
+	const id, fence, next = "task\uFFFD", "ordered-fence\U0001f600\\ud800", "next-task"
 	mustSubmit(t, client, id, "job", nil)
 	mustSubmit(t, client, fence, "job", nil)
 	s := integrationServer(t, rdb, WithConcurrency(2))
@@ -80,18 +80,30 @@ func TestCancelServerRedisMatchesAttemptAndRetainsSlot(t *testing.T) {
 		"{\"task_id\":\"unknown\",\"attempt_token\":\"other\"}",
 		"{\"task_id\":\"task\uFFFD\",\"attempt_token\":\"stale\"}",
 		strings.Replace(string(valid), "\uFFFD", "\xff", 1),
+		strings.Replace(string(valid), "\uFFFD", `\uD800`, 1),
+		strings.Replace(string(valid), "\uFFFD", `\udfff`, 1),
 	} {
 		if n, err := rdb.Publish(ctx, channel, bad).Result(); err != nil || n != 1 {
 			t.Fatalf("publish %q: subscribers=%d err=%v", bad, n, err)
 		}
 	}
-	// 同一订阅按 Redis 发布次序消费。第二个 Handler 收到真实 Cancel 后，
-	// 可以确定更早的坏消息与旧 token 已经过消费，且未影响第一个执行。
-	requireCancel(t, client, fence, CancelCanceled, "canceled")
+	fenceNotice, err := json.Marshal(map[string]string{
+		"task_id": fence, "attempt_token": submitHash(t, rdb, fence)["attempt_token"],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 同一订阅按 Redis 发布次序消费。合法代理项对和字面反斜线可精确匹配，
+	// 同时证明更早的坏消息与旧 token 已经过消费，且未影响第一个执行。
+	escapedFence := strings.Replace(string(fenceNotice), "\U0001f600", `\uD83d\udE00`, 1)
+	if n, err := rdb.Publish(ctx, channel, escapedFence).Result(); err != nil || n != 1 {
+		t.Fatalf("publish fence %q: subscribers=%d err=%v", escapedFence, n, err)
+	}
 	event := awaitReclaimSignal(t, canceled)
 	if event.id != fence || !errors.Is(context.Cause(event.ctx), errExecutionCanceled) || contexts[id].Err() != nil {
 		t.Fatalf("unexpected local cancellation: id=%q cause=%v other=%v", event.id, context.Cause(event.ctx), contexts[id].Err())
 	}
+	requireCancel(t, client, fence, CancelCanceled, "canceled")
 
 	mustSubmit(t, client, next, "job", nil)
 	requireCancel(t, client, id, CancelCanceled, "canceled")
@@ -126,8 +138,8 @@ func TestCancelServerRedisMatchesAttemptAndRetainsSlot(t *testing.T) {
 }
 
 func TestCancelServerRedisDuringDrain(t *testing.T) {
-	for _, force := range []bool{false, true} {
-		t.Run(map[bool]string{false: "drain", true: "force"}[force], func(t *testing.T) {
+	for _, mode := range []string{"drain", "force", "unexpected_close", "unexpected_close_after_fatal"} {
+		t.Run(mode, func(t *testing.T) {
 			rdb := startSubmitRedis(t)
 			client := integrationClient(t, rdb)
 			ctx := context.Background()
@@ -161,7 +173,26 @@ func TestCancelServerRedisDuringDrain(t *testing.T) {
 			if err := awaitReclaimSignal(t, canceled); !errors.Is(err, errExecutionCanceled) {
 				t.Fatalf("locally canceled while draining: %v", err)
 			}
-			if force {
+			var firstFatal error
+			switch mode {
+			case "unexpected_close_after_fatal":
+				firstFatal = errors.New("earlier server failure")
+				s.reportFatal(firstFatal)
+				fallthrough
+			case "unexpected_close":
+				if err := s.subscription.Close(); err != nil {
+					t.Fatal(err)
+				}
+				awaitReclaimSignal(t, s.subscriptionDone)
+				got := awaitReclaimSignal(t, s.Errors())
+				if firstFatal != nil {
+					if got != firstFatal {
+						t.Fatalf("first fatal error was replaced: %v", got)
+					}
+				} else if !strings.Contains(got.Error(), "subscription closed unexpectedly") {
+					t.Fatalf("unexpected fatal error during drain: %v", got)
+				}
+			case "force":
 				cancel()
 				if err := awaitReclaimSignal(t, finished); !errors.Is(err, context.Canceled) {
 					t.Fatalf("forced Shutdown = %v", err)
@@ -172,7 +203,7 @@ func TestCancelServerRedisDuringDrain(t *testing.T) {
 				}
 			}
 			close(release)
-			if !force {
+			if mode != "force" {
 				if err := awaitReclaimSignal(t, finished); err != nil {
 					t.Fatal(err)
 				}

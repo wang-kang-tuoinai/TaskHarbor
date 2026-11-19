@@ -1,6 +1,6 @@
 # ADR-0009：Cancel 的尽力通知与订阅生命周期
 
-- 状态：已接受
+- 状态：已接受，通知编码和校验边界由 ADR-0010 部分替代
 - 日期：2026-11-17
 - 关系：补充 Cancel 操作契约、ADR-0004 和 ADR-0008；细化 Start 在订阅网络等待期间与 Shutdown 的协调，不改变既有退出控制权和实际停止语义。
 
@@ -24,7 +24,7 @@ Redis 中撤销执行权与本地 Handler 实际退出不是同一事件。可�
 
 - canceled 不保证 Handler 已停止或业务副作用被撤回。通知早于执行登记仍可能导致 Handler 启动，后续续租和上报由 Redis 拒绝。
 - 断线遗漏不补发，消费积压可能丢消息；Channel 不提供每次接收错误，不能承诺所有订阅故障都通过 Errors 可见。channel 未关闭不证明连接健康。
-- 发布失败与取消结果分离，保留权威取消事实但可能失去快速本地取消机会；重复 Cancel 不再次推送。对非法 UTF-8 的任务 ID 仍按原始字节取消，跳过发布并记录诊断，避免 JSON 替换字符造成误匹配。消费者同样丢弃含非法 UTF-8 的消息。
+- 发布失败与取消结果分离，保留权威取消事实但可能失去快速本地取消机会；重复 Cancel 不再次推送。
 - Start 增加订阅网络等待，需扩展 starting 与 Shutdown 的协调。请求预算不承诺底层取消立即返回；不能提前声明实际 stopped。
 - pending 取消成本随队列长度增长；不扫描其他分支的 pending 残留意味着有意限制损坏检测范围。
 - 本文是已确认设计，不表示 Cancel 已实现或测试通过；具体预算、结果和验收以 Cancel 契约为准。
@@ -43,4 +43,5 @@ Redis 中撤销执行权与本地 Handler 实际退出不是同一事件。可�
 - [Cancel 操作契约](../Cancel操作契约.md)
 - [ADR-0004](0004-renew-failure-and-eligibility.md)
 - [ADR-0008](0008-shutdown-lifecycle.md)
+- [ADR-0010](0010-cancel-notification-unicode.md)
 - [领域术语](../../GLOSSARY.md)

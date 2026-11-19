@@ -12,7 +12,8 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 | [0006](0006-result-reporting-lifecycle.md) | 结果上报的生命周期与故障范围 | 已接受 |
 | [0007](0007-reclaim-batches-and-failure-scope.md) | Reclaim 的批次边界、检测范围与故障隔离 | 已接受 |
 | [0008](0008-shutdown-lifecycle.md) | Shutdown 的排空、强制取消与实际停止 | 已接受 |
-| [0009](0009-cancel-notification-and-subscription.md) | Cancel 的尽力通知与订阅生命周期 | 已接受 |
+| [0009](0009-cancel-notification-and-subscription.md) | Cancel 的尽力通知与订阅生命周期 | 已接受，通知编码和校验边界由 0010 部分替代 |
+| [0010](0010-cancel-notification-unicode.md) | Cancel 通知的 Unicode 边界 | 已接受 |
 
 0002、0003 补充已讨论的 Server 设计，不替代 0001。0003 区分本轮实施边界与已确认但延期实现的退出、续租语义；“已接受”不表示代码已经实现。
 
@@ -27,3 +28,5 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 0008 细化并部分替代 0003 的完整退出语义，补充 0006 的统一上报取消来源。Shutdown 的设计已接受，实现与验证状态另行记录。
 
 0009 明确 Cancel 的通知失败、消息遗漏与订阅启动/退出边界，补充 0008 的 starting 协调；不改变退出控制权，不代表 Cancel 已实现。
+
+0010 部分替代 0009 的通知编码和校验边界，明确原始任务 ID 的权威取消以及 JSON 消息的 Unicode 校验。

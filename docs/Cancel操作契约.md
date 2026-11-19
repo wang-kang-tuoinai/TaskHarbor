@@ -2,7 +2,7 @@
 
 > 初版仅使用 Redis。取消是直接进入 canceled 终态，不设置取消标记。
 
-2026-11-17 已确认的实施依据；订阅与故障取舍见 [ADR-0009](adr/0009-cancel-notification-and-subscription.md)。设计确认不表示功能已经实现。
+2026-11-17 已确认的实施依据。订阅与故障取舍见 [ADR-0009](adr/0009-cancel-notification-and-subscription.md)，2026-11-19 确认的通知 Unicode 边界见 [ADR-0010](adr/0010-cancel-notification-unicode.md)。设计确认不表示功能已经实现。
 
 ## 1. 操作目的
 
@@ -93,7 +93,7 @@ CancelResult 区分 canceled、not_found、already_terminal；already_terminal �
 4. Shutdown 覆盖 starting：请求取消启动等待，协调启动收尾；迟到订阅成功不得再启动循环。区分启动流程结束与已启动循环结束，不能无条件等待从未启动的 Claim 的 done。底层操作未及时返回时，Shutdown 仍按自身期限返回并保持收尾，不提前标记 stopped。
 5. 使用 PubSub.Channel() 接收，不与 Receive* 混用（首次订阅确认在创建 Channel 前完成）。连接恢复及接收错误主要交由当前 go-redis 实现处理，不自建接收、心跳或重连框架。
 6. 消费协程解析 JSON、校验字段，按 task_id 与 attempt_token 精确查找本地执行尝试。找到时复用撤销路径，在表锁外取消对应 Handler 和上报、移除续租资格，原因使用 errExecutionCanceled。旧 token 不影响新执行尝试。
-7. 无匹配记录时忽略该消息并继续消费，不 return 退出整个协程；不缓存早到通知。格式错误、非法 UTF-8 或缺字段记录诊断后丢弃，不取消任意任务，也不停止消费。不等待 Handler 退出、不在消费路径同步做网络上报。
+7. 无匹配记录时忽略该消息并继续消费，不缓存早到通知。格式错误、非法 UTF-8、未配对的 UTF-16 代理项转义或缺字段的消息，记录诊断后丢弃并继续消费。有效代理项对和合法的 U+FFFD 按解码后的字符精确匹配。不等待 Handler 退出、不在消费路径同步做网络上报。
 8. 通知渠道仅供可信平台组件发布，正常消息不额外查询 Redis 重复确认。消息不可信的访问控制设计不由此解析逻辑替代。
 9. 正常排空期间继续订阅；强制阶段或正常排空后的清理请求关闭 Server 自己持有的 PubSub。实例完全停止前确认消费协程结束，不关闭调用方 Redis 客户端或共享池。
 10. 消息 channel 关闭时区分是否已由生命周期管理明确请求关闭订阅，不能仅凭 stopping 判断正常，因为排空时仍需通知。主动关闭属正常退出；非预期关闭停止通知消费与 Claim，通过现有 Errors 报告，保留健康 Renew、Reclaim、Handler 和上报，不自动另建订阅流程。
@@ -157,7 +157,7 @@ CancelResult 区分 canceled、not_found、already_terminal；already_terminal �
 - pending 成员缺失、错误类型、执行身份或可直接查询的索引冲突：写前拒绝且零写入；重复 pending 项取消后全部移除且返回成功。
 - running 租约已过期但关系完整时仍可取消；取消不受重试额度耗尽影响。
 - 通知发布失败：状态和索引迁移保留、公开结果仍成功、诊断可见；无订阅者不报取消失败。验证响应丢失与底层重试可能改变结果分类但不重复通知。
-- JSON 格式错误、字段缺失、未知执行和旧 token：不取消其他任务，消费继续处理后续合法消息。
+- JSON 格式错误、非法 UTF-8、未配对的 UTF-16 代理项转义、字段缺失、未知执行和旧 token：不取消其他任务，消费继续处理后续合法消息。
 - 订阅确认前不领取；确认失败/超时清理且对象不可重启；启动期间 Shutdown、迟到确认和从未启动的 done 不造成死锁或退出后启动。
 - 正常排空仍可收到取消，强制阶段关闭订阅；意外 channel 关闭停止 Claim/消费但不停止健康续租及上报；主动关闭不报致命错误，Redis 客户端仍可使用。
 - 网络中断与恢复验证消息可能丢失、Redis 取消仍有效；不得以 channel 未关闭声称连接健康。真实网络验证启动预算和 Cancel context 边界，区分等待超时与操作未生效。

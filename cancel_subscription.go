@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -53,7 +55,7 @@ func (s *server) consumeCancellation() {
 			TaskID       string `json:"task_id"`
 			AttemptToken string `json:"attempt_token"`
 		}
-		if !utf8.ValidString(message.Payload) || json.Unmarshal([]byte(message.Payload), &notice) != nil ||
+		if !validCancellationUnicode(message.Payload) || json.Unmarshal([]byte(message.Payload), &notice) != nil ||
 			notice.TaskID == "" || notice.AttemptToken == "" {
 			slog.Warn("invalid task cancellation notification", "channel", message.Channel)
 			continue
@@ -70,5 +72,37 @@ func (s *server) consumeCancellation() {
 		_ = sub.Close()
 	} else {
 		<-closed
+	}
+}
+
+// JSON 解码会把非法 UTF-8 和未配对的代理项转义替换成 U+FFFD，可能命中另一执行身份。
+// 这里只校验 Unicode，JSON 语法由 json.Unmarshal 检查。
+func validCancellationUnicode(payload string) bool {
+	if !utf8.ValidString(payload) {
+		return false
+	}
+	for {
+		escape := strings.IndexByte(payload, '\\')
+		if escape < 0 || escape+1 == len(payload) {
+			return true
+		}
+		payload = payload[escape+1:]
+		if payload[0] != 'u' || len(payload) < 5 {
+			payload = payload[1:]
+			continue
+		}
+		unit, _ := strconv.ParseUint(payload[1:5], 16, 16)
+		payload = payload[5:]
+		if unit < 0xd800 || unit > 0xdfff {
+			continue
+		}
+		if unit >= 0xdc00 || len(payload) < 6 || !strings.HasPrefix(payload, `\u`) {
+			return false
+		}
+		low, _ := strconv.ParseUint(payload[2:6], 16, 16)
+		if low < 0xdc00 || low > 0xdfff {
+			return false
+		}
+		payload = payload[6:]
 	}
 }
