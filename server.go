@@ -11,10 +11,13 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wang-kang-tuoinai/TaskHarbor/internal/redisstore"
 )
 
 const DefaultQueue = "default"
-const MaxResultSize = 1000
+
+// MaxResultSize 是任务结果 JSON 编码后的字节数上限。
+const MaxResultSize = redisstore.MaxResultSize
 
 // Task 是传递给 handler 的业务视图，执行身份单独存储。
 type Task struct {

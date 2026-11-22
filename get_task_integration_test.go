@@ -85,6 +85,26 @@ func TestGetTaskRedisLifecycle(t *testing.T) {
 	if canceled.Result != nil || canceled.LastError != "" || canceled.LastFailedAt != nil {
 		t.Fatalf("canceled task = %+v", canceled)
 	}
+
+	const cancelRetryID = "canceled while waiting to retry"
+	mustSubmit(t, c, cancelRetryID, "job", nil, WithSubmitMaxRetry(1))
+	mustClaimForCancel(t, rdb, cancelRetryID, "worker", "attempt")
+	applied, err = redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{
+		TaskID: cancelRetryID, AttemptToken: "attempt", ErrorMessage: "failure before cancel",
+	})
+	if err != nil || !applied {
+		t.Fatalf("prepare failure before cancel: applied=%v err=%v", applied, err)
+	}
+	cancelRetrying := requireTaskSnapshot(t, c, cancelRetryID, "retry_wait", 1)
+	if cancelRetrying.LastError != "failure before cancel" || cancelRetrying.LastFailedAt == nil {
+		t.Fatalf("task waiting for retry before cancel = %+v", cancelRetrying)
+	}
+	requireCancel(t, c, cancelRetryID, CancelCanceled, "canceled")
+	canceledAfterFailure := requireTaskSnapshot(t, c, cancelRetryID, "canceled", 1)
+	if canceledAfterFailure.Result != nil || canceledAfterFailure.LastError != cancelRetrying.LastError ||
+		canceledAfterFailure.LastFailedAt == nil || !canceledAfterFailure.LastFailedAt.Equal(*cancelRetrying.LastFailedAt) {
+		t.Fatalf("canceled task after failure = %+v", canceledAfterFailure)
+	}
 }
 
 func TestGetTaskRedisCompletionResultPresence(t *testing.T) {
@@ -179,6 +199,9 @@ func TestGetTaskRedisRejectsInvalidRecords(t *testing.T) {
 		{name: "completed without result", base: completed, drop: "result"},
 		{name: "failure error without timestamp", base: retryWait, drop: "last_failed_at"},
 		{name: "retry_wait exhausted", base: retryWait, set: map[string]string{"max_retry": "0"}},
+		{name: "failed with different failure and finish times", base: retryWait, set: map[string]string{
+			"status": "failed", "max_retry": "0", "finished_at": "1236",
+		}},
 		{name: "retried pending without failure history", base: pending, set: map[string]string{
 			"max_retry": "1", "attempts": "1", "last_claimed_at": "1235",
 		}},

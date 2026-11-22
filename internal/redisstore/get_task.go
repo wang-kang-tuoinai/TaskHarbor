@@ -145,11 +145,11 @@ func validateTaskState(fields map[string]string, task *TaskInfo) error {
 		return fmt.Errorf("%w: execution identity incompatible with %s", ErrTaskData, status)
 	}
 	result, hasResult := fields["result"]
-	if hasResult != (status == "completed") || len(result) > maxResultSize {
+	if hasResult != (status == "completed") || len(result) > MaxResultSize {
 		return fmt.Errorf("%w: missing, unexpected or oversized result", ErrTaskData)
 	}
 	lastError, hasError := fields["last_error"]
-	if hasError != (task.LastFailedAt != nil) || (hasError && (lastError == "" || len(lastError) > maxErrorMessageSize)) {
+	if hasError != (task.LastFailedAt != nil) || (hasError && (lastError == "" || len(lastError) > MaxErrorMessageSize)) {
 		return fmt.Errorf("%w: invalid last_error or last_failed_at", ErrTaskData)
 	}
 	// 重领、重新入队和最终失败都需要已记录的失败。首次执行可以在失败前取消，
@@ -158,6 +158,10 @@ func validateTaskState(fields map[string]string, task *TaskInfo) error {
 	canHaveFailure := needsFailure || (status == "canceled" && attempts == 1 && attempts < limit)
 	if hasError && !canHaveFailure || !hasError && needsFailure {
 		return fmt.Errorf("%w: failure history incompatible with %s and attempts", ErrTaskData, status)
+	}
+	// ReportFailure 和 Reclaim 进入 failed 时使用同一次 Redis 取时写入两个字段。
+	if status == "failed" && !task.LastFailedAt.Equal(*task.FinishedAt) {
+		return fmt.Errorf("%w: last_failed_at differs from finished_at in failed", ErrTaskData)
 	}
 	return nil
 }
