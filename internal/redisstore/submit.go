@@ -5,8 +5,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
+)
+
+// 提交和读取任务详情使用相同的初始配置边界。
+const (
+	MaxPayloadSize            = 1 << 20
+	MaxTaskTypeSize           = 128
+	MaxSubmitRetries          = 2147483646
+	MaxSubmitExecutionTimeout = 24 * time.Hour
+	MinSubmitRetryDelay       = 15 * time.Second
+	MaxSubmitRetryDelay       = 7 * 24 * time.Hour
 )
 
 var (
@@ -32,6 +43,20 @@ type SubmitParams struct {
 type SubmitResult struct {
 	TaskID  string
 	Created bool
+}
+
+// ValidateTaskType 检查提交参数和已保存任务详情使用的任务类型。
+func ValidateTaskType(taskType string) error {
+	if len(taskType) == 0 || len(taskType) > MaxTaskTypeSize {
+		return fmt.Errorf("task type must contain 1..%d ASCII bytes", MaxTaskTypeSize)
+	}
+	for i := 0; i < len(taskType); i++ {
+		b := taskType[i]
+		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.' || b == ':') {
+			return fmt.Errorf("invalid task type byte at %d", i)
+		}
+	}
+	return nil
 }
 
 // Submit 只负责序列化和调用；参数校验由公开 Client 边界完成。

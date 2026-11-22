@@ -12,15 +12,15 @@ import (
 
 const (
 	// MaxPayloadSize 是提交参数的最大字节数，不限制参数编码。
-	MaxPayloadSize = 1 << 20
+	MaxPayloadSize = redisstore.MaxPayloadSize
 	// MaxTaskTypeSize 是 ASCII 任务类型的最大字节数。
-	MaxTaskTypeSize = 128
+	MaxTaskTypeSize = redisstore.MaxTaskTypeSize
 	// MaxSubmitRetries 保证最大尝试次数在 32/64 位 Go int 和 Lua 中均可精确表示。
-	MaxSubmitRetries = 2147483646
+	MaxSubmitRetries = redisstore.MaxSubmitRetries
 	// MaxSubmitExecutionTimeout 是单次执行时长的上限。
-	MaxSubmitExecutionTimeout = 24 * time.Hour
+	MaxSubmitExecutionTimeout = redisstore.MaxSubmitExecutionTimeout
 	// MaxSubmitRetryDelay 是重试等待时长的上限。
-	MaxSubmitRetryDelay = 7 * 24 * time.Hour
+	MaxSubmitRetryDelay = redisstore.MaxSubmitRetryDelay
 )
 
 var (
@@ -32,7 +32,7 @@ var (
 	ErrStorageData = errors.New("invalid storage data")
 )
 
-// Client 提交和取消任务，持有调用方的 Redis 客户端，可并发使用。
+// Client 提交、查询和取消任务，持有调用方的 Redis 客户端，可并发使用。
 // 必须通过 NewClient 构造；调用方负责配置和关闭 Redis 客户端。
 type Client struct {
 	rdb *redis.Client
@@ -95,14 +95,8 @@ func (c *Client) Submit(ctx context.Context, taskID, taskType string, payload []
 	if taskID == "" {
 		return nil, fmt.Errorf("%w: task ID must not be empty", ErrInvalidArgument)
 	}
-	if len(taskType) == 0 || len(taskType) > MaxTaskTypeSize {
-		return nil, fmt.Errorf("%w: task type must contain 1..%d ASCII bytes", ErrInvalidArgument, MaxTaskTypeSize)
-	}
-	for i := 0; i < len(taskType); i++ {
-		b := taskType[i]
-		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.' || b == ':') {
-			return nil, fmt.Errorf("%w: invalid task type byte at %d", ErrInvalidArgument, i)
-		}
+	if err := redisstore.ValidateTaskType(taskType); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if len(payload) > MaxPayloadSize {
 		return nil, fmt.Errorf("%w: payload exceeds %d bytes", ErrInvalidArgument, MaxPayloadSize)
@@ -113,7 +107,7 @@ func (c *Client) Submit(ctx context.Context, taskID, taskType string, payload []
 	if cfg.executionTimeout < time.Millisecond || cfg.executionTimeout > MaxSubmitExecutionTimeout || cfg.executionTimeout%time.Millisecond != 0 {
 		return nil, fmt.Errorf("%w: execution timeout must be whole milliseconds in 1ms..%v", ErrInvalidArgument, MaxSubmitExecutionTimeout)
 	}
-	if cfg.retryDelay < 15*time.Second || cfg.retryDelay > MaxSubmitRetryDelay || cfg.retryDelay%time.Millisecond != 0 {
+	if cfg.retryDelay < redisstore.MinSubmitRetryDelay || cfg.retryDelay > MaxSubmitRetryDelay || cfg.retryDelay%time.Millisecond != 0 {
 		return nil, fmt.Errorf("%w: retry delay must be whole milliseconds in 15s..%v", ErrInvalidArgument, MaxSubmitRetryDelay)
 	}
 	result, err := redisstore.Submit(ctx, c.rdb, redisstore.SubmitParams{

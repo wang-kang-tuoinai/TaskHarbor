@@ -8,6 +8,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	maxResultSize       = 1000
+	maxErrorMessageSize = 4096
+)
+
 var (
 	// ErrReportArgument 表示上报输入非法，未发送命令。
 	ErrReportArgument = errors.New("invalid report argument")
@@ -27,8 +32,8 @@ type CompleteParams struct {
 // Complete 执行一次原子成功上报；仅 err=nil 时 applied 有确定含义。
 // 调用方禁用透明重试；仅明确 NOSCRIPT 允许脚本缓存回退。
 func Complete(ctx context.Context, rdb *redis.Client, p CompleteParams) (bool, error) {
-	if len(p.Result) > 1000 {
-		return false, fmt.Errorf("%w: result exceeds 1000 bytes", ErrReportArgument)
+	if len(p.Result) > maxResultSize {
+		return false, fmt.Errorf("%w: result exceeds %d bytes", ErrReportArgument, maxResultSize)
 	}
 	return runReport(ctx, rdb, completeScript, "complete", p.TaskID, p.AttemptToken, p.Result,
 		[]string{"taskq:meta:" + p.TaskID, "taskq:default:active", "taskq:default:lease"})
@@ -44,8 +49,8 @@ type FailureParams struct {
 // ReportFailure 执行一次原子失败上报，由已保存的尝试预算决定目标状态。
 // 仅 err=nil 时 applied 有确定含义；Server 负责有界网络重试。
 func ReportFailure(ctx context.Context, rdb *redis.Client, p FailureParams) (bool, error) {
-	if p.ErrorMessage == "" || len(p.ErrorMessage) > 4096 {
-		return false, fmt.Errorf("%w: error message must contain 1..4096 bytes", ErrReportArgument)
+	if p.ErrorMessage == "" || len(p.ErrorMessage) > maxErrorMessageSize {
+		return false, fmt.Errorf("%w: error message must contain 1..%d bytes", ErrReportArgument, maxErrorMessageSize)
 	}
 	return runReport(ctx, rdb, failureScript, "ReportFailure", p.TaskID, p.AttemptToken, p.ErrorMessage,
 		[]string{"taskq:meta:" + p.TaskID, "taskq:default:active", "taskq:default:lease", "taskq:default:retry"})
