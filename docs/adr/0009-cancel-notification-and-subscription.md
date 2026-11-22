@@ -1,6 +1,6 @@
 # ADR-0009：Cancel 的尽力通知与订阅生命周期
 
-- 状态：已接受
+- 状态：已接受，通知编码和校验边界由 ADR-0010 部分替代
 - 日期：2026-11-17
 - 关系：补充 Cancel 操作契约、ADR-0004 和 ADR-0008；细化 Start 在订阅网络等待期间与 Shutdown 的协调，不改变既有退出控制权和实际停止语义。
 
@@ -43,4 +43,5 @@ Redis 中撤销执行权与本地 Handler 实际退出不是同一事件。可�
 - [Cancel 操作契约](../Cancel操作契约.md)
 - [ADR-0004](0004-renew-failure-and-eligibility.md)
 - [ADR-0008](0008-shutdown-lifecycle.md)
+- [ADR-0010](0010-cancel-notification-unicode.md)
 - [领域术语](../../GLOSSARY.md)

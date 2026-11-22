@@ -21,14 +21,40 @@ const (
 
 func (s *server) Start() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.beginStartLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cancelSubscriptionTimeout)
+	s.cancelStart = cancel
+	s.mu.Unlock()
+	// Redis 的订阅确认必须在锁外等待，Shutdown 在此期间仍可撤销启动许可。
+	sub, err := s.subscribeToCancellation(ctx)
+	cancel()
+	s.mu.Lock()
+	s.cancelStart = nil
+	if s.status != serverStarting {
+		s.mu.Unlock()
+		if sub != nil {
+			_ = sub.Close()
+		}
+		close(s.startDone)
+		return errors.New("server shutdown during startup")
+	}
+	close(s.startDone)
+	if err != nil {
+		s.forceStop()
+		s.markStoppedLocked()
+		s.mu.Unlock()
 		return err
 	}
 	s.status = serverRunning
+	s.subscription = sub
+	go s.consumeCancellation()
 	go s.claimLoop()
 	go s.renewLoop()
 	go s.reclaimLoop()
+	s.mu.Unlock()
 	return nil
 }
 

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,34 +32,6 @@ func (c *renewDeadlineConn) SetReadDeadline(deadline time.Time) error {
 		}
 	}
 	return c.Conn.SetReadDeadline(deadline)
-}
-
-func readRenewTCPCommand(reader *bufio.Reader) ([]string, error) {
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(line[1:]))
-	if err != nil {
-		return nil, err
-	}
-	parts := make([]string, 0, count)
-	for range count {
-		line, err = reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		n, err := strconv.Atoi(strings.TrimSpace(line[1:]))
-		if err != nil {
-			return nil, err
-		}
-		data := make([]byte, n+2)
-		if _, err := io.ReadFull(reader, data); err != nil {
-			return nil, err
-		}
-		parts = append(parts, string(data[:n]))
-	}
-	return parts, nil
 }
 
 func TestRenewTCPDeadlineOptionsAndSharedPool(t *testing.T) {
@@ -116,7 +87,7 @@ func testServerTCPDeadline(t *testing.T, operation string) {
 						defer conn.Close()
 						reader := bufio.NewReader(conn)
 						for {
-							parts, err := readRenewTCPCommand(reader)
+							parts, err := readRedisTCPCommand(reader)
 							if err != nil {
 								return
 							}

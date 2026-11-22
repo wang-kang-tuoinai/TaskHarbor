@@ -51,7 +51,10 @@ func newStartServer(t *testing.T, process func(context.Context, redis.Cmder) err
 
 func newStartServerWithReclaim(t *testing.T, process, reclaim func(context.Context, redis.Cmder) error, opts ...Option) *server {
 	t.Helper()
-	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true})
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true, Protocol: 2, DisableIdentity: true,
+		Dialer: subscriptionPipe(cancelSubscribeAck),
+	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	rdb.AddHook(submitHook{process: process})
 	public, err := NewServer(rdb, opts...)
@@ -70,19 +73,10 @@ func newStartServerWithReclaim(t *testing.T, process, reclaim func(context.Conte
 		s.reclaimClient.AddHook(submitHook{process: reclaim})
 	}
 	t.Cleanup(func() {
-		s.cancelClaim()
-		s.cancelRenew()
-		s.cancelReclaim()
-		s.mu.Lock()
-		started := s.ownerID != ""
-		s.mu.Unlock()
-		if started {
-			<-s.claimDone
-			<-s.renewDone
-			<-s.reclaimDone
-		}
-		s.forceStop()
-		s.executionWG.Wait()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = s.Shutdown(ctx)
+		<-s.shutdownDone
 	})
 	return s
 }
