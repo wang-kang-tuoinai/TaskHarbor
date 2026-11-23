@@ -15,7 +15,7 @@ const (
 	reportRequestTimeout  = 3 * time.Second
 	reportMaxAttempts     = 3
 	reportRetryDelay      = 100 * time.Millisecond
-	maxErrorMessageSize   = 4096
+	maxErrorMessageSize   = redisstore.MaxErrorMessageSize
 	errorTruncationMarker = "...[truncated]"
 )
 
