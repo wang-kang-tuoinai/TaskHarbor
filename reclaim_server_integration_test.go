@@ -269,12 +269,12 @@ func TestReclaimServerUnknownRetryResponse(t *testing.T) {
 			if err := rdb.Ping(ctx).Err(); err != nil {
 				t.Fatal(err)
 			}
+			s := integrationServer(t, rdb, WithReclaimInterval(2*time.Second))
 			// 保留 Claim 循环供故障隔离断言，避免它消费这项待观察的入队结果。
-			rdb.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
+			s.claimClient.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
 				cmd.(*redis.Cmd).SetVal([]any{})
 				return nil
 			}})
-			s := integrationServer(t, rdb, WithReclaimInterval(2*time.Second))
 			type response struct {
 				source       string
 				began, ended time.Time

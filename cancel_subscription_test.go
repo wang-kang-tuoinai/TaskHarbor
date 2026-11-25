@@ -132,15 +132,15 @@ func TestStartWaitsForCancellationSubscription(t *testing.T) {
 		})
 		defer rdb.Close()
 		claimed := make(chan struct{}, 1)
-		rdb.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
-			claimed <- struct{}{}
-			cmd.(*redis.Cmd).SetVal([]any{})
-			return nil
-		}})
 		s, err := NewServer(rdb)
 		if err != nil {
 			t.Fatal(err)
 		}
+		s.(*server).claimClient.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
+			claimed <- struct{}{}
+			cmd.(*redis.Cmd).SetVal([]any{})
+			return nil
+		}})
 		defer s.Shutdown(context.Background())
 		if err := s.HandleFunc("job", func(context.Context, *Task) error { return nil }); err != nil {
 			t.Fatal(err)

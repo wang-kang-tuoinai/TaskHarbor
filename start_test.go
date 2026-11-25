@@ -56,7 +56,6 @@ func newStartServerWithReclaim(t *testing.T, process, reclaim func(context.Conte
 		Dialer: subscriptionPipe(cancelSubscribeAck),
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
-	rdb.AddHook(submitHook{process: process})
 	public, err := NewServer(rdb, opts...)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +65,7 @@ func newStartServerWithReclaim(t *testing.T, process, reclaim func(context.Conte
 	s.onComplete = func(context.Context, *execution, executionKey, []byte) {}
 	s.onFailure = func(context.Context, *execution, executionKey, error) {}
 	// go-redis 的 WithTimeout 共享池但不复制命令 Hook，各包装分别安装。
+	s.claimClient.AddHook(submitHook{process: process})
 	s.renewClient.AddHook(submitHook{process: process})
 	if reclaim == nil {
 		s.cancelReclaim() // 既有假时钟测试只观察 Claim/Renew，不能发出真实 Redis 请求。

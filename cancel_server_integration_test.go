@@ -294,7 +294,7 @@ func TestCancelServerRedisBeforeExecutionRegistration(t *testing.T) {
 	fenceStarted, fenceCanceled, admitted := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	claimReturned, releaseClaim := make(chan struct{}), make(chan struct{})
 	defer closeShutdownGate(releaseClaim)
-	rdb.AddHook(observeRenewHook{process: func(next redis.ProcessHook) redis.ProcessHook {
+	s.claimClient.AddHook(observeRenewHook{process: func(next redis.ProcessHook) redis.ProcessHook {
 		return func(ctx context.Context, cmd redis.Cmder) error {
 			err := next(ctx, cmd)
 			// 真实脚本授予执行权后，在响应交给 Start 循环前暂停。

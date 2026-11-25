@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	claimRequestTimeout = 3 * time.Second
 	claimPollInterval   = 100 * time.Millisecond
 	claimBackoffInitial = 100 * time.Millisecond
 	claimBackoffMax     = 2 * time.Second
@@ -34,9 +35,12 @@ func (s *server) claimLoop() {
 			s.reportFatal(fmt.Errorf("generate claim attempt token: %w", err))
 			return
 		}
-		claimed, err := redisstore.Claim(s.claimCtx, s.redisClient, redisstore.ClaimParams{
+		// 先取得槽并生成身份；连接等待、读写和 NOSCRIPT 回退共用这次期限。
+		request, cancel := context.WithTimeout(s.claimCtx, claimRequestTimeout)
+		claimed, err := redisstore.Claim(request, s.claimClient, redisstore.ClaimParams{
 			OwnerID: s.ownerID, AttemptToken: token, LeaseDurationMS: s.leaseDuration.Milliseconds(),
 		})
+		cancel()
 		if err != nil {
 			<-s.slots
 			if s.claimCtx.Err() != nil {

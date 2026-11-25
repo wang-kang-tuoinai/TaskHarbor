@@ -43,6 +43,7 @@ type Server interface {
 // server 是 Server 的内部实现，必须通过 NewServer 构造，且不得被复制。
 type server struct {
 	redisClient     *redis.Client
+	claimClient     *redis.Client // 共享调用方池，使用独立领取预算，不得 Close。
 	renewClient     *redis.Client // WithTimeout 包装共享调用方连接池，不得 Close。
 	reportClient    *redis.Client // 同样共享调用方池，独立使用上报的 I/O 预算，不得 Close。
 	reclaimClient   *redis.Client // 共享调用方池，使用独立回收预算，不得 Close。
@@ -186,6 +187,7 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	subscriptionCtx, closeSubscription := context.WithCancel(context.Background())
 	s := &server{
 		redisClient:       rdb,
+		claimClient:       boundedRedisClient(rdb, claimRequestTimeout),
 		renewClient:       boundedRedisClient(rdb, cfg.renewInterval),
 		reportClient:      boundedRedisClient(rdb, reportRequestTimeout),
 		reclaimClient:     boundedRedisClient(rdb, reclaimRequestTimeout),
