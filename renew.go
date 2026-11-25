@@ -58,8 +58,3 @@ func (s *server) renewLoop() {
 		}
 	}
 }
-
-func (s *server) revokeExecution(key executionKey, record *execution, cause error) {
-	record.cancel(cause) // 取消回调必须在表锁外执行。
-	s.deleteExecution(key)
-}

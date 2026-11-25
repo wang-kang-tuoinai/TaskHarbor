@@ -3,48 +3,15 @@ package taskq
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/wang-kang-tuoinai/TaskHarbor/internal/redisstore"
 )
 
 const DefaultQueue = "default"
-
-// MaxResultSize 是任务结果 JSON 编码后的字节数上限。
-const MaxResultSize = redisstore.MaxResultSize
-
-// Task 是传递给 handler 的业务视图，执行身份单独存储。
-type Task struct {
-	ID       string
-	Type     string
-	Attempts int
-	Payload  []byte
-	result   []byte
-}
-
-// HandlerFunc 处理一个任务。所有结果写入必须在返回前完成。
-// handler 返回后不得再修改 task，也不得并发调用 SetResult。
-type HandlerFunc func(ctx context.Context, task *Task) error
-
-// SetResult 将 v JSON 编码到独立的 result 缓冲区。Server 只在
-// HandlerFunc 成功返回后读取结果。
-func (t *Task) SetResult(v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal task result: %w", err)
-	}
-	if len(b) > MaxResultSize {
-		return fmt.Errorf("task result too large: %d bytes (max %d)", len(b), MaxResultSize)
-	}
-	t.result = append([]byte(nil), b...)
-	return nil
-}
 
 type serverStatus uint8
 
@@ -55,21 +22,6 @@ const (
 	serverStopping
 	serverStopped
 )
-
-// executionKey 独立于可变的 Task 字段来标识一次执行尝试。
-type executionKey struct {
-	taskID       string
-	attemptToken string
-}
-
-// execution 保存续租资格，不证明租约有效或 Renew 正在运行。登记后字段不可变。
-// 请在表锁之外调用 cancel。
-type execution struct {
-	executionTimeout       time.Duration
-	cancel                 context.CancelCauseFunc
-	reportCtx              context.Context // 继承实例级上报取消，独立于 Handler 超时及 Claim/Renew。
-	cancelExecutionReports context.CancelFunc
-}
 
 // Server 是任务平台对外暴露的执行服务接口。内部实现类型未导出，
 // 外部只能通过该接口使用，无法直接修改 Server 的内部状态。
@@ -136,68 +88,6 @@ type server struct {
 	subscriptionCtx   context.Context
 	closeSubscription context.CancelFunc
 	subscriptionDone  chan struct{}
-}
-
-// beginStart 封存注册并生成实例身份；独立入口供本地启动检查使用。
-func (s *server) beginStart() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.beginStartLocked()
-}
-
-// 调用方持有 mu，只有封存注册并生成身份后才能等待网络。
-func (s *server) beginStartLocked() error {
-	if s.status != serverCreated {
-		return errors.New("server has already started")
-	}
-	if len(s.handlers) == 0 {
-		return errors.New("at least one handler is required")
-	}
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		return fmt.Errorf("generate owner ID: %w", err)
-	}
-	s.ownerID = fmt.Sprintf("%x", id)
-	s.status = serverStarting
-	return nil
-}
-
-func (s *server) addExecution(key executionKey, e *execution) error {
-	if key.taskID == "" || key.attemptToken == "" || e == nil || e.cancel == nil || e.executionTimeout <= 0 {
-		return errors.New("invalid execution")
-	}
-	s.executionsMu.Lock()
-	defer s.executionsMu.Unlock()
-	if _, exists := s.executions[key]; exists {
-		return errors.New("execution already exists")
-	}
-	s.executions[key] = e
-	return nil
-}
-
-func (s *server) getExecution(key executionKey) (*execution, bool) {
-	s.executionsMu.RLock()
-	defer s.executionsMu.RUnlock()
-	e, ok := s.executions[key]
-	return e, ok
-}
-
-func (s *server) deleteExecution(key executionKey) {
-	s.executionsMu.Lock()
-	defer s.executionsMu.Unlock()
-	delete(s.executions, key)
-}
-
-// snapshotExecutions 复制表条目，共享不可变的 execution 记录。
-// 请在本方法返回后再发起 Redis 请求和取消操作。
-func (s *server) snapshotExecutions() map[executionKey]*execution {
-	s.executionsMu.RLock()
-	defer s.executionsMu.RUnlock()
-	snapshot := make(map[executionKey]*execution, len(s.executions))
-	for key, e := range s.executions {
-		snapshot[key] = e
-	}
-	return snapshot
 }
 
 type serverConfig struct {
@@ -330,18 +220,6 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 	s.onFailure = s.reportFailure
 	return s, nil
 }
-
-// WithTimeout 复制配置且共享原池，取最短正 I/O 预算以保留更短超时，
-// 并使调用方禁用 I/O 超时时仍会设置 socket deadline。包装不得 Close。
-func boundedRedisClient(rdb *redis.Client, budget time.Duration) *redis.Client {
-	for _, limit := range []time.Duration{rdb.Options().ReadTimeout, rdb.Options().WriteTimeout} {
-		if limit > 0 && limit < budget {
-			budget = limit
-		}
-	}
-	return rdb.WithTimeout(budget)
-}
-
 func (s *server) HandleFunc(taskType string, fn HandlerFunc) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -359,4 +237,12 @@ func (s *server) HandleFunc(taskType string, fn HandlerFunc) error {
 	}
 	s.handlers[taskType] = fn
 	return nil
+}
+
+func (s *server) Errors() <-chan error { return s.errors }
+
+func (s *server) reportFatal(err error) {
+	// Once 仅限制通知次数，各调用方仍负责停止受影响的循环。
+	s.cancelClaim()
+	s.fatalOnce.Do(func() { s.errors <- err })
 }
