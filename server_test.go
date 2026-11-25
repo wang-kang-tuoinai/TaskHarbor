@@ -56,6 +56,13 @@ func TestNewServer(t *testing.T) {
 	}
 }
 
+// beginStart 封存注册并生成实例身份；独立入口供本地启动检查使用。
+func (s *server) beginStart() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.beginStartLocked()
+}
+
 func TestRegistrationAndStartup(t *testing.T) {
 	s := newTestServer(t)
 	if err := s.beginStart(); err == nil {

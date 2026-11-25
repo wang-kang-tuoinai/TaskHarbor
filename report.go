@@ -98,6 +98,10 @@ func (s *server) report(ctx context.Context, record *execution, key executionKey
 	}
 }
 
+func forbidsReporting(cause error) bool {
+	return errors.Is(cause, errExecutionLost) || errors.Is(cause, errExecutionCanceled) || errors.Is(cause, errExecutionInconsistent)
+}
+
 func (s *server) reportingStopped(ctx context.Context, record *execution) bool {
 	// 父取消原因可能已可见，而 AfterFunc 还未获调度。调用边界须同步停止上报。
 	if forbidsReporting(context.Cause(ctx)) {

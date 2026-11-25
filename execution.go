@@ -13,8 +13,62 @@ var (
 	errExecutionInconsistent = errors.New("execution data inconsistent")
 )
 
-func forbidsReporting(cause error) bool {
-	return errors.Is(cause, errExecutionLost) || errors.Is(cause, errExecutionCanceled) || errors.Is(cause, errExecutionInconsistent)
+// executionKey 独立于可变的 Task 字段来标识一次执行尝试。
+type executionKey struct {
+	taskID       string
+	attemptToken string
+}
+
+// execution 保存续租资格，不证明租约有效或 Renew 正在运行。登记后字段不可变。
+// 请在表锁之外调用 cancel。
+type execution struct {
+	executionTimeout       time.Duration
+	cancel                 context.CancelCauseFunc
+	reportCtx              context.Context // 继承实例级上报取消，独立于 Handler 超时及 Claim/Renew。
+	cancelExecutionReports context.CancelFunc
+}
+
+func (s *server) addExecution(key executionKey, e *execution) error {
+	if key.taskID == "" || key.attemptToken == "" || e == nil || e.cancel == nil || e.executionTimeout <= 0 {
+		return errors.New("invalid execution")
+	}
+	s.executionsMu.Lock()
+	defer s.executionsMu.Unlock()
+	if _, exists := s.executions[key]; exists {
+		return errors.New("execution already exists")
+	}
+	s.executions[key] = e
+	return nil
+}
+
+func (s *server) getExecution(key executionKey) (*execution, bool) {
+	s.executionsMu.RLock()
+	defer s.executionsMu.RUnlock()
+	e, ok := s.executions[key]
+	return e, ok
+}
+
+func (s *server) deleteExecution(key executionKey) {
+	s.executionsMu.Lock()
+	defer s.executionsMu.Unlock()
+	delete(s.executions, key)
+}
+
+// snapshotExecutions 复制表条目，共享不可变的 execution 记录。
+// 请在本方法返回后再发起 Redis 请求和取消操作。
+func (s *server) snapshotExecutions() map[executionKey]*execution {
+	s.executionsMu.RLock()
+	defer s.executionsMu.RUnlock()
+	snapshot := make(map[executionKey]*execution, len(s.executions))
+	for key, e := range s.executions {
+		snapshot[key] = e
+	}
+	return snapshot
+}
+
+func (s *server) revokeExecution(key executionKey, record *execution, cause error) {
+	record.cancel(cause) // 取消回调必须在表锁外执行。
+	s.deleteExecution(key)
 }
 
 type executionResult struct {

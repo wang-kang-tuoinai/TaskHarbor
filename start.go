@@ -5,18 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"time"
-
-	"github.com/redis/go-redis/v9"
-	"github.com/wang-kang-tuoinai/TaskHarbor/internal/redisstore"
-)
-
-const (
-	claimPollInterval   = 100 * time.Millisecond
-	claimBackoffInitial = 100 * time.Millisecond
-	claimBackoffMax     = 2 * time.Second
 )
 
 func (s *server) Start() error {
@@ -58,106 +46,19 @@ func (s *server) Start() error {
 	return nil
 }
 
-func (s *server) Errors() <-chan error { return s.errors }
-
-func (s *server) claimLoop() {
-	defer close(s.claimDone)
-	backoff := claimBackoffInitial
-	for {
-		select {
-		case <-s.claimCtx.Done():
-			return
-		case s.slots <- struct{}{}:
-		}
-		if s.claimCtx.Err() != nil {
-			<-s.slots
-			return
-		}
-		token, err := s.newAttemptToken()
-		if err != nil {
-			<-s.slots
-			s.reportFatal(fmt.Errorf("generate claim attempt token: %w", err))
-			return
-		}
-		claimed, err := redisstore.Claim(s.claimCtx, s.redisClient, redisstore.ClaimParams{
-			OwnerID: s.ownerID, AttemptToken: token, LeaseDurationMS: s.leaseDuration.Milliseconds(),
-		})
-		if err != nil {
-			<-s.slots
-			if s.claimCtx.Err() != nil {
-				return
-			}
-			if transientRedisError(err) {
-				if !waitContext(s.claimCtx, backoff) {
-					return
-				}
-				backoff = min(backoff*2, claimBackoffMax)
-				continue
-			}
-			s.reportFatal(err)
-			return
-		}
-		backoff = claimBackoffInitial
-		if claimed == nil {
-			<-s.slots
-			if !waitContext(s.claimCtx, claimPollInterval) {
-				return
-			}
-			continue
-		}
-		// 响应已限制执行时长在 24 小时内，转换为 time.Duration 不会溢出。
-		// acceptExecution 接管槽，包括它自身拒绝登记的情况，循环不能再次归还。
-		_, err = s.acceptExecution(context.Background(), &Task{
-			ID: claimed.TaskID, Type: claimed.TaskType, Payload: claimed.Payload, Attempts: claimed.Attempts,
-		}, executionKey{taskID: claimed.TaskID, attemptToken: token}, time.Duration(claimed.ExecutionTimeoutMS)*time.Millisecond)
-		if err != nil {
-			s.reportFatal(fmt.Errorf("accept claimed task %q: %w", claimed.TaskID, err))
-			return
-		}
+// 调用方持有 mu，只有封存注册并生成身份后才能等待网络。
+func (s *server) beginStartLocked() error {
+	if s.status != serverCreated {
+		return errors.New("server has already started")
 	}
-}
-
-func (s *server) reportFatal(err error) {
-	// Once 仅限制通知次数，各调用方仍负责停止受影响的循环。
-	s.cancelClaim()
-	s.fatalOnce.Do(func() { s.errors <- err })
-}
-
-func transientRedisError(err error) bool {
-	var redisErr redis.Error
-	if errors.As(err, &redisErr) {
-		return false
+	if len(s.handlers) == 0 {
+		return errors.New("at least one handler is required")
 	}
-	// 平台不重试不存在的域名、非暂时性解析错误和非法地址。
-	var dns *net.DNSError
-	if errors.As(err, &dns) && (dns.IsNotFound || !dns.IsTimeout && !dns.IsTemporary) {
-		return false
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return fmt.Errorf("generate owner ID: %w", err)
 	}
-	var address *net.AddrError
-	var invalid net.InvalidAddrError
-	if errors.As(err, &address) || errors.As(err, &invalid) {
-		return false
-	}
-	var networkErr net.Error
-	return errors.As(err, &networkErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, net.ErrClosed) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, redis.ErrPoolTimeout)
-}
-
-func waitContext(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return ctx.Err() == nil
-	}
-}
-
-func newAttemptToken() (string, error) {
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", token), nil
+	s.ownerID = fmt.Sprintf("%x", id)
+	s.status = serverStarting
+	return nil
 }
