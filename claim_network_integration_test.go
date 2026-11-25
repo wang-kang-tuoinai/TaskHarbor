@@ -213,6 +213,42 @@ func TestClaimTCPRequestBudget(t *testing.T) {
 	}
 }
 
+func TestClaimTCPShutdownWaitsForRequestDeadline(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	firstRequest := make(chan time.Time, 1)
+	addr := serveClaimTCP(t, func(_ int, args []string) string {
+		if !isClaimTCPCommand(args) {
+			return claimTCPDefaultReply(args)
+		}
+		if calls.Add(1) == 1 {
+			firstRequest <- time.Now()
+		}
+		return ""
+	})
+	rdb := claimTCPClient(t, addr, 8*time.Second, 8*time.Second)
+	s := startClaimServer(t, rdb, unexpectedClaimHandler(t))
+	first := awaitClaimSignal(t, firstRequest, time.Second)
+	// 等待本轮消耗约一半预算，区分原有截止时间与从停领重新计算的期限。
+	time.Sleep(time.Until(first.Add(1500 * time.Millisecond)))
+	ctx, cancel := context.WithDeadline(context.Background(), first.Add(4*time.Second))
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown did not finish at the pending Claim's deadline: %v", err)
+	}
+	if elapsed := time.Since(first); elapsed < 2700*time.Millisecond || elapsed > 4*time.Second {
+		t.Errorf("Shutdown completed %v after Claim reached TCP, want 3s with scheduling tolerance", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("TCP endpoint received %d Claim requests, want 1", got)
+	}
+	select {
+	case err := <-s.Errors():
+		t.Errorf("unexpected fatal error: %v", err)
+	default:
+	}
+}
+
 func TestClaimTCPNOSCRIPTSharesDeadline(t *testing.T) {
 	t.Parallel()
 	requests := make(chan claimTCPRequest, 4)
@@ -280,13 +316,16 @@ func claimSuccessReply(id string) string {
 func TestClaimTCPSlotWaitPrecedesRequestBudget(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
-	requests := make(chan claimTCPRequest, 8)
+	requests := make(chan claimTCPRequest, 2)
 	addr := serveClaimTCP(t, func(connection int, args []string) string {
 		if !isClaimTCPCommand(args) {
 			return claimTCPDefaultReply(args)
 		}
-		requests <- claimTCPCommand(connection, args)
-		switch calls.Add(1) {
+		call := calls.Add(1)
+		if call <= 2 {
+			requests <- claimTCPCommand(connection, args)
+		}
+		switch call {
 		case 1:
 			return claimSuccessReply("first")
 		case 2:
@@ -330,7 +369,12 @@ func TestClaimTCPSlotWaitPrecedesRequestBudget(t *testing.T) {
 type claimPoolObserver struct {
 	armed   atomic.Bool
 	started chan time.Time
-	results chan error
+	results chan claimPoolResult
+}
+
+type claimPoolResult struct {
+	err      error
+	finished time.Time
 }
 
 func (o *claimPoolObserver) Allow() error {
@@ -342,7 +386,7 @@ func (o *claimPoolObserver) Allow() error {
 
 func (o *claimPoolObserver) ReportResult(err error) {
 	if o.armed.Load() {
-		o.results <- err
+		o.results <- claimPoolResult{err: err, finished: time.Now()}
 	}
 }
 
@@ -354,7 +398,7 @@ func TestClaimTCPPoolWaitBudgetAndCancellation(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			observer := &claimPoolObserver{started: make(chan time.Time, 8), results: make(chan error, 8)}
+			observer := &claimPoolObserver{started: make(chan time.Time, 8), results: make(chan claimPoolResult, 8)}
 			requests := make(chan claimTCPRequest, 4)
 			addr := serveClaimTCP(t, func(connection int, args []string) string {
 				if isClaimTCPCommand(args) {
@@ -388,10 +432,11 @@ func TestClaimTCPPoolWaitBudgetAndCancellation(t *testing.T) {
 				}
 				want = context.Canceled
 			}
-			if err := awaitClaimSignal(t, observer.results, 4*time.Second); !errors.Is(err, want) {
-				t.Fatalf("Claim result from occupied pool = %v, want %v", err, want)
+			result := awaitClaimSignal(t, observer.results, 4*time.Second)
+			if !errors.Is(result.err, want) {
+				t.Fatalf("Claim result from occupied pool = %v, want %v", result.err, want)
 			}
-			if elapsed := time.Since(began); !shutdown && (elapsed < 2700*time.Millisecond || elapsed > 4*time.Second) {
+			if elapsed := result.finished.Sub(began); !shutdown && (elapsed < 2700*time.Millisecond || elapsed > 4*time.Second) {
 				t.Fatalf("Claim waited %v for a connection, want 3s with scheduling tolerance", elapsed)
 			}
 			select {
@@ -433,7 +478,7 @@ func TestClaimRedisLostResponseThroughServer(t *testing.T) {
 
 	var armed, dropped, commandConn atomic.Bool
 	var calls atomic.Int32
-	requests := make(chan claimTCPRequest, 8)
+	requests := make(chan claimTCPRequest, 2)
 	allowNext := make(chan struct{})
 	started, releaseHandler := make(chan string, 4), make(chan struct{})
 	defer closeShutdownGate(allowNext)
@@ -449,8 +494,11 @@ func TestClaimRedisLostResponseThroughServer(t *testing.T) {
 			conn = &dropSubmitReplyConn{Conn: conn, armed: &armed, dropped: &dropped, expected: []byte(claimSuccessReply("first"))}
 		}
 		return &observeClaimWrite{Conn: conn, observe: func(args []string) {
-			requests <- claimTCPCommand(0, args)
-			switch calls.Add(1) {
+			call := calls.Add(1)
+			if call <= 2 {
+				requests <- claimTCPCommand(0, args)
+			}
+			switch call {
 			case 1:
 				armed.Store(true)
 			case 2:
