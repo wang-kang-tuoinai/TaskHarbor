@@ -4,7 +4,7 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 
 | 编号 | 标题 | 状态 |
 | --- | --- | --- |
-| [0001](0001-submit-client-and-storage.md) | Client Submit 接口与 Redis 存储边界 | 已接受 |
+| [0001](0001-submit-client-and-storage.md) | Client Submit 接口与 Redis 存储边界 | 已接受；固定队列限制由 0011 部分替代 |
 | [0002](0002-claim-failure-and-retry-policy.md) | Claim 的重试边界与异常处理 | 已接受；客户端构造条件由 0005 部分替代 |
 | [0003](0003-execution-supervision-and-lifecycle.md) | 执行监督、资源归属与分阶段生命周期 | 已接受；执行表与 Errors 定义由 0004、完整退出语义由 0008 部分替代 |
 | [0004](0004-renew-failure-and-eligibility.md) | 续租资格与续租故障的影响范围 | 已接受 |
@@ -14,6 +14,7 @@ ADR 记录已讨论的背景、决策、替代方案及后果。状态使用“�
 | [0008](0008-shutdown-lifecycle.md) | Shutdown 的排空、强制取消与实际停止 | 已接受 |
 | [0009](0009-cancel-notification-and-subscription.md) | Cancel 的尽力通知与订阅生命周期 | 已接受，通知编码和校验边界由 0010 部分替代 |
 | [0010](0010-cancel-notification-unicode.md) | Cancel 通知的 Unicode 边界 | 已接受 |
+| [0011](0011-multi-queue-routing.md) | 多队列路由、调度和故障范围 | 已接受 |
 
 0002、0003 补充已讨论的 Server 设计，不替代 0001。0003 区分本轮实施边界与已确认但延期实现的退出、续租语义；“已接受”不表示代码已经实现。
 

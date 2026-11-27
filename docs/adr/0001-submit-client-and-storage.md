@@ -1,6 +1,6 @@
 # ADR-0001：Client Submit 接口与 Redis 存储边界
 
-- 状态：已接受
+- 状态：已接受；固定 default 限制由 [ADR-0011](0011-multi-queue-routing.md) 部分替代
 - 日期：2026-10-31
 
 ## 背景

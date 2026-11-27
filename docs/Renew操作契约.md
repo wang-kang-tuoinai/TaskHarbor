@@ -1,5 +1,9 @@
 # 操作契约：Renew
 
+## 多队列修订（已确认，待实施）
+
+本轮 execution 保存 Claim 已核对的所属队列。将它用于构造队列索引 key，同时作为 expectedQueue 传入每次 Lua 请求。先沿用状态和 token 的拒绝语义；对仍为 running 且 token 匹配的记录，写前核对 Hash 的 queue，缺失或错配按一致性错误零写入。随后沿用原有索引、租约和执行权检查。 队列语义及兼容边界见 [ADR-0011](adr/0011-multi-queue-routing.md)。下文固定 default 的示例描述首版。
+
 > 初版仅使用 Redis。每次只续租一个任务；租约仅以 lease ZSET 的 score 为准。
 
 > 2026-11-04 确认的设计，依据 [ADR-0004](adr/0004-renew-failure-and-eligibility.md)。本轮只实现 Renew 及必要的启动、监督集成；complete、ReportFailure 继续占位，Reclaim、客户端 Cancel、公开 Shutdown 和本地租约截止保护延期。本文是实施与验收依据，不表示已实现。
