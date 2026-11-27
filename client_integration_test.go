@@ -118,6 +118,50 @@ func requirePending(t *testing.T, rdb *redis.Client, want ...string) {
 	}
 }
 
+func TestClientRedisLegacyDefaultQueue(t *testing.T) {
+	rdb := startSubmitRedis(t)
+	ctx := context.Background()
+	const id, taskType, payload = "legacy-default", "job", `{"legacy":true}`
+	const createdAt = 1700000000123
+	// 直接写入多队列支持前的 Submit 格式，验证读取和取消无需迁移。
+	fields := map[string]string{
+		"task_id": id, "task_type": taskType, "payload": payload,
+		"max_retry": "0", "execution_timeout_ms": "60000", "retry_delay_ms": "30000",
+		"queue": "default", "status": "pending", "attempts": "0", "created_at": "1700000000123",
+	}
+	if err := rdb.HSet(ctx, "taskq:meta:"+id, fields).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.RPush(ctx, "taskq:default:pending", id).Err(); err != nil {
+		t.Fatal(err)
+	}
+	c := integrationClient(t, rdb)
+
+	if got := mustSubmit(t, c, id, taskType, []byte(payload)); got.Created || got.TaskID != id {
+		t.Fatalf("Submit with omitted queue = %+v, want duplicate of %q", got, id)
+	}
+	if got := mustSubmit(t, c, id, taskType, []byte(payload), WithSubmitQueue("default")); got.Created || got.TaskID != id {
+		t.Fatalf("Submit with explicit default queue = %+v, want duplicate of %q", got, id)
+	}
+	pending := requireTaskSnapshot(t, c, id, "pending", 0)
+	if pending.Queue != "default" || pending.TaskType != taskType || string(pending.Payload) != payload || pending.CreatedAt.UnixMilli() != createdAt {
+		t.Fatalf("unexpected legacy task: %+v", pending)
+	}
+	if got := submitHash(t, rdb, id); !reflect.DeepEqual(got, fields) {
+		t.Fatalf("duplicate Submit or GetTask changed the legacy hash: got %q, want %q", got, fields)
+	}
+	requirePending(t, rdb, id)
+
+	requireCancel(t, c, id, CancelCanceled, "canceled")
+	canceled := requireTaskSnapshot(t, c, id, "canceled", 0)
+	fields["status"] = "canceled"
+	fields["finished_at"] = strconv.FormatInt(canceled.FinishedAt.UnixMilli(), 10)
+	if got := submitHash(t, rdb, id); !reflect.DeepEqual(got, fields) {
+		t.Fatalf("legacy hash after Cancel = %q, want %q", got, fields)
+	}
+	requirePending(t, rdb)
+}
+
 func TestSubmitRedisQueueRouting(t *testing.T) {
 	rdb := startSubmitRedis(t)
 	c := integrationClient(t, rdb)

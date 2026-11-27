@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +21,10 @@ func TestCancelRedisCustomQueue(t *testing.T) {
 	ctx := context.Background()
 	const id, queue, owner, token = "send-email", "Mail_9-queue", "original-owner", "original-attempt"
 	const meta = "taskq:meta:" + id
-	const pending = "taskq:Mail_9-queue:pending"
-	const active = "taskq:Mail_9-queue:active"
-	const lease = "taskq:Mail_9-queue:lease"
-	const retry = "taskq:Mail_9-queue:retry"
+	const prefix = "taskq:" + queue + ":"
+	const pending, active, lease, retry = prefix + "pending", prefix + "active", prefix + "lease", prefix + "retry"
+	const earlierID, laterID = "earlier-task", "later-task"
+	neighbors := []redis.Z{{Score: 0, Member: earlierID}, {Score: 3, Member: laterID}}
 
 	for _, tc := range []struct {
 		status  string
@@ -60,13 +61,16 @@ func TestCancelRedisCustomQueue(t *testing.T) {
 					pipe.HSet(ctx, meta, "last_claimed_at", createdAt)
 				}
 				switch tc.status {
+				case "pending":
+					pipe.LPush(ctx, pending, earlierID)
+					pipe.RPush(ctx, pending, laterID)
 				case "running":
 					pipe.HSet(ctx, meta, "owner_id", owner, "attempt_token", token)
-					pipe.SAdd(ctx, active, id)
-					pipe.ZAdd(ctx, lease, redis.Z{Score: 1, Member: id})
+					pipe.SAdd(ctx, active, id, earlierID, laterID)
+					pipe.ZAdd(ctx, lease, neighbors[0], redis.Z{Score: 1, Member: id}, neighbors[1])
 				case "retry_wait":
 					pipe.HSet(ctx, meta, "max_retry", 1, "last_error", "failure", "last_failed_at", createdAt)
-					pipe.ZAdd(ctx, retry, redis.Z{Score: 2, Member: id})
+					pipe.ZAdd(ctx, retry, neighbors[0], redis.Z{Score: 2, Member: id}, neighbors[1])
 				case "completed":
 					pipe.HSet(ctx, meta, "result", `{"ok":true}`, "finished_at", createdAt)
 				case "failed":
@@ -102,10 +106,24 @@ func TestCancelRedisCustomQueue(t *testing.T) {
 			}
 			after := claimSnapshot(t, rdb)
 			for _, key := range tc.indexes {
-				if _, exists := after[key]; exists {
-					t.Fatalf("cancel left the target in %q", key)
+				switch key {
+				case pending:
+					if got, err := rdb.LRange(ctx, key, 0, -1).Result(); err != nil || !slices.Equal(got, []string{earlierID, laterID}) {
+						t.Fatalf("pending after Cancel = %q, %v", got, err)
+					}
+				case active:
+					got, err := rdb.SMembers(ctx, key).Result()
+					slices.Sort(got)
+					if err != nil || !slices.Equal(got, []string{earlierID, laterID}) {
+						t.Fatalf("active after Cancel = %q, %v", got, err)
+					}
+				case lease, retry:
+					if got, err := rdb.ZRangeWithScores(ctx, key, 0, -1).Result(); err != nil || !reflect.DeepEqual(got, neighbors) {
+						t.Fatalf("%q after Cancel = %+v, %v, want %+v", key, got, err, neighbors)
+					}
 				}
 				delete(before, key)
+				delete(after, key)
 			}
 			delete(before, meta)
 			delete(after, meta)
