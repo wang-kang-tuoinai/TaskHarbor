@@ -1,5 +1,9 @@
 # 操作契约：Submit
 
+## 多队列修订（已确认，待实施）
+
+任务 ID 全局唯一。提交选项可指定队列，省略取 default，显式空值非法。首次提交固定所属队列；同 ID 换队列按配置冲突处理。创建记录并加入所属队列的 pending 仍是一次原子操作。 队列语义及兼容边界见 [ADR-0011](adr/0011-multi-queue-routing.md)。下文固定 default 的示例描述首版。
+
 > 适用于当前 Go 异步任务平台的初版设计。初版仅使用 Redis，不引入 MySQL；任务详情存储于 Hash，索引迁移通过 Redis Lua 完成。
 >
 > 七份契约统一使用 pending、running、retry_wait、completed、failed、canceled 六种状态，其中后三种为终态。不设置取消标记。

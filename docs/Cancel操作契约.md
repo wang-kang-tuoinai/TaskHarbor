@@ -1,5 +1,9 @@
 # 操作契约：Cancel
 
+## 多队列修订（已确认，待实施）
+
+Cancel(ctx, taskID) 按全局 ID 定位。在一次 Lua 操作中沿用既有状态分支，需要修改索引时读取并校验 Hash 的 queue，定位所属队列后原子取消。running 通知继续按 owner 投递，每实例一个订阅，按 taskID 和 attemptToken 撤销。 队列语义及兼容边界见 [ADR-0011](adr/0011-multi-queue-routing.md)。下文固定 default 的示例描述首版。
+
 > 初版仅使用 Redis。取消是直接进入 canceled 终态，不设置取消标记。
 
 2026-11-17 已确认的实施依据。订阅与故障取舍见 [ADR-0009](adr/0009-cancel-notification-and-subscription.md)，2026-11-19 确认的通知 Unicode 边界见 [ADR-0010](adr/0010-cancel-notification-unicode.md)。设计确认不表示功能已经实现。
