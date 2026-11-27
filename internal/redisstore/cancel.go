@@ -29,10 +29,7 @@ func Cancel(ctx context.Context, rdb *redis.Client, taskID string) (CancelResult
 	if utf8.ValidString(taskID) {
 		utf8ID = 1
 	}
-	response, err := cancelScript.Run(ctx, rdb, []string{
-		"taskq:meta:" + taskID,
-		"taskq:default:pending", "taskq:default:active", "taskq:default:lease", "taskq:default:retry",
-	}, taskID, utf8ID).Result()
+	response, err := cancelScript.Run(ctx, rdb, []string{"taskq:meta:" + taskID}, taskID, utf8ID).Result()
 	if err != nil {
 		if redis.HasErrorPrefix(err, "TASKQ_CANCEL_INCONSISTENT") {
 			return CancelResult{}, fmt.Errorf("%w: %w", ErrCancelInconsistent, err)

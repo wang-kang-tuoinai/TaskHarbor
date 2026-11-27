@@ -59,8 +59,8 @@ func parseTaskInfo(fields map[string]string, taskID string) (*TaskInfo, error) {
 	if err := ValidateTaskType(taskType); err != nil {
 		return nil, fmt.Errorf("%w: task_type: %v", ErrTaskData, err)
 	}
-	if queue != "default" {
-		return nil, fmt.Errorf("%w: missing or invalid queue", ErrTaskData)
+	if err := ValidateQueueName(queue); err != nil {
+		return nil, fmt.Errorf("%w: queue: %v", ErrTaskData, err)
 	}
 	payload, hasPayload := fields["payload"]
 	if !hasPayload || len(payload) > MaxPayloadSize {

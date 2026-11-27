@@ -32,6 +32,7 @@ type SubmitResult struct {
 }
 
 type submitConfig struct {
+	queue            string
 	maxRetry         int
 	executionTimeout time.Duration
 	retryDelay       time.Duration
@@ -41,7 +42,13 @@ type submitConfig struct {
 type SubmitOption func(*submitConfig)
 
 func defaultSubmitConfig() *submitConfig {
-	return &submitConfig{executionTimeout: 60 * time.Second, retryDelay: 30 * time.Second}
+	return &submitConfig{queue: DefaultQueue, executionTimeout: 60 * time.Second, retryDelay: 30 * time.Second}
+}
+
+// WithSubmitQueue 指定任务首次提交时绑定的所属队列，默认 default。
+// 队列名为 1～64 字节的 ASCII 字母、数字及 _-，区分大小写，meta 为保留名称。
+func WithSubmitQueue(queue string) SubmitOption {
+	return func(c *submitConfig) { c.queue = queue }
 }
 
 // WithSubmitMaxRetry 设置首次尝试之外允许的重试次数，默认 0。
@@ -77,6 +84,9 @@ func (c *Client) Submit(ctx context.Context, taskID, taskType string, payload []
 	if err := redisstore.ValidateTaskType(taskType); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
+	if err := redisstore.ValidateQueueName(cfg.queue); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
 	if len(payload) > MaxPayloadSize {
 		return nil, fmt.Errorf("%w: payload exceeds %d bytes", ErrInvalidArgument, MaxPayloadSize)
 	}
@@ -90,7 +100,7 @@ func (c *Client) Submit(ctx context.Context, taskID, taskType string, payload []
 		return nil, fmt.Errorf("%w: retry delay must be whole milliseconds in 15s..%v", ErrInvalidArgument, MaxSubmitRetryDelay)
 	}
 	result, err := redisstore.Submit(ctx, c.rdb, redisstore.SubmitParams{
-		TaskID: taskID, TaskType: taskType, Payload: payload, MaxRetry: cfg.maxRetry,
+		TaskID: taskID, TaskType: taskType, Queue: cfg.queue, Payload: payload, MaxRetry: cfg.maxRetry,
 		ExecutionTimeoutMS: cfg.executionTimeout.Milliseconds(), RetryDelayMS: cfg.retryDelay.Milliseconds(),
 	})
 	if err != nil {

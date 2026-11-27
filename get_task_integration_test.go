@@ -136,6 +136,19 @@ func TestGetTaskRedisCompletionResultPresence(t *testing.T) {
 	}
 }
 
+func TestGetTaskRedisCustomQueueWithoutIndexes(t *testing.T) {
+	rdb := startSubmitRedis(t)
+	c := integrationClient(t, rdb)
+	const id, queue = "send-email", "Mail_9-queue"
+	mustSubmit(t, c, id, "job", nil, WithSubmitQueue(queue))
+	if err := rdb.Del(context.Background(), "taskq:Mail_9-queue:pending").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got := requireTaskSnapshot(t, c, id, "pending", 0); got.Queue != queue {
+		t.Fatalf("GetTask queue = %q, want %q", got.Queue, queue)
+	}
+}
+
 func TestGetTaskRedisRejectsInvalidRecords(t *testing.T) {
 	rdb := startSubmitRedis(t)
 	c := integrationClient(t, rdb)
@@ -180,7 +193,10 @@ func TestGetTaskRedisRejectsInvalidRecords(t *testing.T) {
 		{name: "missing payload", base: pending, drop: "payload"},
 		{name: "missing creation timestamp", base: pending, drop: "created_at"},
 		{name: "invalid task type", base: pending, set: map[string]string{"task_type": "two words"}},
-		{name: "unknown queue", base: pending, set: map[string]string{"queue": "other"}},
+		{name: "missing queue", base: pending, drop: "queue"},
+		{name: "empty queue", base: pending, set: map[string]string{"queue": ""}},
+		{name: "reserved queue", base: pending, set: map[string]string{"queue": "meta"}},
+		{name: "invalid queue", base: pending, set: map[string]string{"queue": "other:queue"}},
 		{name: "unknown status", base: pending, set: map[string]string{"status": "unknown"}},
 		{name: "negative retries", base: pending, set: map[string]string{"max_retry": "-1"}},
 		{name: "attempts exceed budget", base: running, set: map[string]string{"attempts": "2"}},

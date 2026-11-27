@@ -27,7 +27,8 @@ type CancelResult struct {
 	Status  string // 当前任务状态，任务不存在时为空。
 }
 
-// Cancel 在 default 队列中原子取消非终态任务。任务不存在或已经终态会返回正常结果。
+// Cancel 按全局任务 ID 在任务所属队列中原子取消非终态任务。
+// 任务不存在或已经终态会返回正常结果。
 // Redis 已确认的取消会撤销执行权，本地 Handler 的退出取决于尽力通知和 Handler 自身。
 // 网络错误可能出现在取消生效后。调用方若启用 Redis 透明重试，可能最终收到
 // already_terminal/canceled。ContextTimeoutEnabled 用于将 ctx 截止时间应用到网络读写。
