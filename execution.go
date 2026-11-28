@@ -22,6 +22,7 @@ type executionKey struct {
 // execution 保存续租资格，不证明租约有效或 Renew 正在运行。登记后字段不可变。
 // 请在表锁之外调用 cancel。
 type execution struct {
+	queue                  string // Claim 核对的所属队列独立保存，不受 Handler 修改 Task 的影响。
 	executionTimeout       time.Duration
 	cancel                 context.CancelCauseFunc
 	reportCtx              context.Context // 继承实例级上报取消，独立于 Handler 超时及 Claim/Renew。
@@ -81,10 +82,10 @@ type executionResult struct {
 // 无论接收是否成功，该槽均交由此路径管理。done 仅表示监督结束，不表示 Handler 已退出。
 // 此处不重复领取或增加 attempts；结果状态交由上报操作原子迁移。
 // parent 属于本轮任务，不能使用领取循环的取消 context。
-func (s *server) acceptExecution(parent context.Context, task *Task, key executionKey, timeout time.Duration) (<-chan struct{}, error) {
+func (s *server) acceptExecution(parent context.Context, task *Task, key executionKey, queue string, timeout time.Duration) (<-chan struct{}, error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	reportCtx, cancelExecutionReports := context.WithCancel(s.reportCtx)
-	record := &execution{executionTimeout: timeout, reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
+	record := &execution{queue: queue, executionTimeout: timeout, reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
 	record.cancel = func(cause error) {
 		// 使用本次撤销的原因，Handler context 可能已保留了更早的超时原因。
 		if forbidsReporting(cause) {

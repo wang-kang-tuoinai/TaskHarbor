@@ -35,7 +35,7 @@ func TestReportingRetriesKeepResultAndEligibility(t *testing.T) {
 					defer callsMu.Unlock()
 					calls = append(calls, time.Since(started))
 					args := cmd.Args()
-					arguments = append(arguments, append([]any(nil), args[len(args)-3:]...))
+					arguments = append(arguments, append([]any(nil), args[len(args)-4:]...))
 					deadline, ok := ctx.Deadline()
 					if !ok || deadline.Sub(time.Now()) != 3*time.Second {
 						t.Errorf("request deadline=%v", deadline)
@@ -61,7 +61,7 @@ func TestReportingRetriesKeepResultAndEligibility(t *testing.T) {
 					t.Fatal(err)
 				}
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job"}, key, 50*time.Millisecond)
+				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job"}, key, DefaultQueue, 50*time.Millisecond)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -107,7 +107,7 @@ func TestReportingFailureMessage(t *testing.T) {
 				s.reportClient.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
 					calls++
 					args := cmd.Args()
-					got := args[len(args)-1].(string)
+					got := args[len(args)-2].(string)
 					if calls == 1 {
 						first = got
 					} else if got != first {
@@ -131,7 +131,7 @@ func TestReportingFailureMessage(t *testing.T) {
 					t.Fatal(err)
 				}
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, time.Second)
+				done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, DefaultQueue, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -171,7 +171,7 @@ func TestExecutionSelectedReportPropagatesVisibleParentCause(t *testing.T) {
 			defer cancelHandler(nil)
 			reportCtx, cancelExecutionReports := context.WithCancel(context.Background())
 			defer cancelExecutionReports()
-			record := &execution{reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
+			record := &execution{queue: DefaultQueue, reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
 			s.onComplete = func(context.Context, *execution, executionKey, []byte) { t.Error("completed after parent revoked") }
 			s.onFailure = func(context.Context, *execution, executionKey, error) {
 				t.Error("reported failure after parent revoked")
@@ -200,7 +200,7 @@ func TestReportingUnregistersParentCancellationAfterCompletion(t *testing.T) {
 		defer cancelHandler(nil)
 		reportCtx, cancelExecutionReports := context.WithCancel(context.Background())
 		defer cancelExecutionReports()
-		record := &execution{reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
+		record := &execution{queue: DefaultQueue, reportCtx: reportCtx, cancelExecutionReports: cancelExecutionReports}
 		calls := 0
 		s.reportClient.AddHook(submitHook{process: func(_ context.Context, cmd redis.Cmder) error {
 			calls++
@@ -253,7 +253,7 @@ func TestReportingCancellationStopsNextRequest(t *testing.T) {
 					t.Fatal(err)
 				}
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(parent, &Task{Type: "job"}, key, time.Second)
+				done, err := s.acceptExecution(parent, &Task{Type: "job"}, key, DefaultQueue, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -362,7 +362,7 @@ func TestReportingOutcomesAndDiagnostics(t *testing.T) {
 					t.Fatal(err)
 				}
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(context.Background(), &Task{Type: "job", Payload: []byte("private-payload")}, executionKey{"task", "token"}, time.Second)
+				done, err := s.acceptExecution(context.Background(), &Task{Type: "job", Payload: []byte("private-payload")}, executionKey{"task", "token"}, DefaultQueue, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -429,7 +429,7 @@ func TestReportingRequestBudgets(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, time.Second)
+		done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -460,7 +460,7 @@ func TestReportingAfterGlobalRenewFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, time.Second)
+		done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -502,7 +502,7 @@ func TestReportingAndBackgroundFatalNotifyOnce(t *testing.T) {
 			return startRedisError("NOPERM report fatal")
 		}})
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, 10*time.Second)
+		done, err := s.acceptExecution(context.Background(), &Task{Type: "job"}, executionKey{"task", "token"}, DefaultQueue, 10*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}

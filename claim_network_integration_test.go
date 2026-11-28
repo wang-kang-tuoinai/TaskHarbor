@@ -24,15 +24,20 @@ type claimTCPRequest struct {
 	connection int
 	command    string
 	token      string
+	queue      string
 	received   time.Time
 }
 
 func claimTCPCommand(connection int, args []string) claimTCPRequest {
-	return claimTCPRequest{connection: connection, command: strings.ToLower(args[0]), token: args[7], received: time.Now()}
+	return claimTCPRequest{connection: connection, command: strings.ToLower(args[0]), token: args[7], queue: args[9], received: time.Now()}
 }
 
 func isClaimTCPCommand(args []string) bool {
-	return len(args) == 9 && args[3] == claimPending && args[4] == claimActive && args[5] == claimLease
+	if len(args) != 10 {
+		return false
+	}
+	prefix := "taskq:" + args[9] + ":"
+	return args[3] == prefix+"pending" && args[4] == prefix+"active" && args[5] == prefix+"lease"
 }
 
 func serveClaimTCP(t *testing.T, reply func(int, []string) string) string {
@@ -109,9 +114,9 @@ func claimTCPClient(t *testing.T, addr string, read, write time.Duration) *redis
 	return rdb
 }
 
-func startClaimServer(t *testing.T, rdb *redis.Client, handler HandlerFunc) Server {
+func startClaimServer(t *testing.T, rdb *redis.Client, handler HandlerFunc, opts ...Option) Server {
 	t.Helper()
-	s, err := NewServer(rdb, WithConcurrency(1))
+	s, err := NewServer(rdb, append([]Option{WithConcurrency(1)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +184,7 @@ func TestClaimTCPRequestBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			prewarmed := int(pingConnection.Load())
-			s := startClaimServer(t, rdb, unexpectedClaimHandler(t))
+			s := startClaimServer(t, rdb, unexpectedClaimHandler(t), WithQueues("mail", "sms"))
 			first := awaitClaimSignal(t, requests, time.Second)
 			if first.connection != prewarmed {
 				t.Fatalf("Claim connection %d differs from caller's prewarmed connection %d", first.connection, prewarmed)
@@ -190,6 +195,9 @@ func TestClaimTCPRequestBudget(t *testing.T) {
 			}
 			if first.token == "" || next.token == "" || first.token == next.token {
 				t.Errorf("independent Claim tokens = %q, %q", first.token, next.token)
+			}
+			if first.queue != "mail" || next.queue != "sms" {
+				t.Errorf("timeout did not advance Claim to next queue: %q then %q", first.queue, next.queue)
 			}
 			select {
 			case err := <-s.Errors():
@@ -245,6 +253,78 @@ func TestClaimTCPShutdownWaitsForRequestDeadline(t *testing.T) {
 	select {
 	case err := <-s.Errors():
 		t.Errorf("unexpected fatal error: %v", err)
+	default:
+	}
+}
+
+func TestClaimTCPEmptyRoundAndShutdown(t *testing.T) {
+	wantQueues := []string{"mail", "sms", "mail", "sms", "mail"}
+	requests := make(chan claimTCPRequest, len(wantQueues))
+	releaseReply := make(chan struct{})
+	defer closeShutdownGate(releaseReply)
+	var calls atomic.Int32
+	addr := serveClaimTCP(t, func(connection int, args []string) string {
+		if isClaimTCPCommand(args) {
+			call := int(calls.Add(1))
+			if call <= len(wantQueues) {
+				requests <- claimTCPCommand(connection, args)
+			}
+			// 第三轮首个空响应等到停领后再发送，确保可以验证停领后是否还会探测下一队列。
+			if call == len(wantQueues) {
+				<-releaseReply
+			}
+			return "*0\r\n"
+		}
+		return claimTCPDefaultReply(args)
+	})
+	rdb := claimTCPClient(t, addr, 8*time.Second, 8*time.Second)
+	s := startClaimServer(t, rdb, unexpectedClaimHandler(t), WithQueues("mail", "sms"))
+	tokens := make(map[string]bool)
+	var previous time.Time
+	for i, queue := range wantQueues {
+		req := awaitClaimSignal(t, requests, time.Second)
+		if req.queue != queue || req.token == "" || tokens[req.token] {
+			t.Fatalf("Claim = %+v, want queue %q and a fresh token", req, queue)
+		}
+		tokens[req.token] = true
+		if i > 0 && queue == "mail" && req.received.Sub(previous) < claimPollInterval {
+			t.Fatal("next round started before waiting after two empty replies")
+		}
+		previous = req.received
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown with pending empty reply = %v, want deadline exceeded", err)
+	}
+	ctx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := s.Shutdown(ctx); !errors.Is(err, ErrShutdownInProgress) {
+		t.Fatalf("Shutdown before releasing the reply = %v, want shutdown in progress", err)
+	}
+	close(releaseReply)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := s.Shutdown(ctx)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrShutdownInProgress) {
+			t.Fatalf("Shutdown after releasing the reply: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("Server did not stop after receiving the empty reply")
+		case <-ticker.C:
+		}
+	}
+	if got := int(calls.Load()); got != len(wantQueues) {
+		t.Fatalf("TCP endpoint received %d Claim requests, want %d through the first probe of the third round", got, len(wantQueues))
+	}
+	select {
+	case err := <-s.Errors():
+		t.Fatalf("empty queue reported a fatal error: %v", err)
 	default:
 	}
 }
@@ -474,7 +554,7 @@ func TestClaimRedisLostResponseThroughServer(t *testing.T) {
 	}
 	client := integrationClient(t, admin)
 	mustSubmit(t, client, "first", "job", nil)
-	mustSubmit(t, client, "second", "job", nil)
+	mustSubmit(t, client, "second", "job", nil, WithSubmitQueue("mail"))
 
 	var armed, dropped, commandConn atomic.Bool
 	var calls atomic.Int32
@@ -516,10 +596,10 @@ func TestClaimRedisLostResponseThroughServer(t *testing.T) {
 		started <- task.ID
 		<-releaseHandler
 		return nil
-	})
+	}, WithQueues(DefaultQueue, "mail"))
 	first := awaitClaimSignal(t, requests, time.Second)
 	second := awaitClaimSignal(t, requests, 2*time.Second)
-	if !dropped.Load() || first.token == "" || second.token == "" || first.token == second.token {
+	if !dropped.Load() || first.token == "" || second.token == "" || first.token == second.token || first.queue != DefaultQueue || second.queue != "mail" {
 		t.Fatalf("expected an independent Claim after a lost response: dropped=%v first=%+v second=%+v", dropped.Load(), first, second)
 	}
 	checkTask := func(id, status string, attempts int) {

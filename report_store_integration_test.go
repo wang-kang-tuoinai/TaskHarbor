@@ -36,7 +36,7 @@ func TestCompleteRedisResults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: id, AttemptToken: "token", Result: result})
+		applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "token", Result: result})
 		if !applied || err != nil {
 			t.Fatalf("applied=%v err=%v", applied, err)
 		}
@@ -64,7 +64,7 @@ func TestCompleteRedisResults(t *testing.T) {
 			t.Fatalf("indexes=%v err=%v", n, err)
 		}
 		// 大结果会使 Hash 转为哈希表，读取也可能推进内部 rehash；比较字段语义而非 DUMP 顺序。
-		if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: id, AttemptToken: "token", Result: []byte("different")}); applied || err != nil || !reflect.DeepEqual(after, submitHash(t, rdb, id)) {
+		if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "token", Result: []byte("different")}); applied || err != nil || !reflect.DeepEqual(after, submitHash(t, rdb, id)) {
 			t.Fatalf("duplicate applied=%v err=%v", applied, err)
 		}
 		if n, err := rdb.Exists(ctx, claimActive, claimLease, "taskq:default:retry", claimPending).Result(); err != nil || n != 0 {
@@ -87,9 +87,9 @@ func seedReporting(t *testing.T, rdb *redis.Client) {
 
 func callStoreReport(ctx context.Context, rdb *redis.Client, failure bool) (bool, error) {
 	if failure {
-		return redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: "task", AttemptToken: "token", ErrorMessage: "failure"})
+		return redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: "task", AttemptToken: "token", ErrorMessage: "failure"})
 	}
-	return redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: "task", AttemptToken: "token", Result: []byte("result")})
+	return redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: "task", AttemptToken: "token", Result: []byte("result")})
 }
 
 func TestReportRedisRejectionsAndConsistency(t *testing.T) {
@@ -212,7 +212,7 @@ end}
 			if failure {
 				keys = append(keys, "taskq:default:retry")
 			}
-			applied, err := rdb.Eval(ctx, prefix+string(authority)+"\n"+string(body), keys, "task", "token", "content").Int64()
+			applied, err := rdb.Eval(ctx, prefix+string(authority)+"\n"+string(body), keys, "task", "token", "content", DefaultQueue).Int64()
 			if (err != nil) != tc.wantError || !tc.wantError && applied != tc.want {
 				t.Fatalf("failure=%v seconds=%s applied=%v err=%v", failure, tc.seconds, applied, err)
 			}
@@ -317,7 +317,7 @@ func TestReportFailureRedisBudget(t *testing.T) {
 			t.Fatalf("claim=%v err=%v", claimed, err)
 		}
 		before := submitHash(t, rdb, id)
-		applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: id, AttemptToken: "token", ErrorMessage: "business failure"})
+		applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "token", ErrorMessage: "business failure"})
 		if !applied || err != nil {
 			t.Fatalf("applied=%v err=%v", applied, err)
 		}
@@ -349,7 +349,7 @@ func TestReportFailureRedisBudget(t *testing.T) {
 			t.Fatalf("execution indexes=%d err=%v", n, err)
 		}
 		snapshot := claimSnapshot(t, rdb)
-		if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: id, AttemptToken: "token", ErrorMessage: "other"}); applied || err != nil || !reflect.DeepEqual(snapshot, claimSnapshot(t, rdb)) {
+		if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "token", ErrorMessage: "other"}); applied || err != nil || !reflect.DeepEqual(snapshot, claimSnapshot(t, rdb)) {
 			t.Fatalf("duplicate=%v err=%v", applied, err)
 		}
 	}

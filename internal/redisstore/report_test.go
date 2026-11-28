@@ -15,9 +15,9 @@ func TestReportStoreBoundary(t *testing.T) {
 	for _, failure := range []bool{false, true} {
 		call := func(rdb *redis.Client) (bool, error) {
 			if failure {
-				return ReportFailure(ctx, rdb, FailureParams{"task", "token", "message"})
+				return ReportFailure(ctx, rdb, FailureParams{"task", "token", "default", "message"})
 			}
-			return Complete(ctx, rdb, CompleteParams{"task", "token", nil})
+			return Complete(ctx, rdb, CompleteParams{"task", "token", "default", nil})
 		}
 		for _, value := range []any{int64(0), int64(1), nil, "1", int64(2), []any{int64(1)}} {
 			calls := 0
@@ -53,12 +53,17 @@ func TestReportStoreBoundary(t *testing.T) {
 		}
 	}
 	rdb := claimHookClient(t, func(context.Context, redis.Cmder) error { t.Fatal("invalid input sent command"); return nil })
-	for _, p := range []CompleteParams{{"", "token", nil}, {"task", "", nil}, {"task", "token", make([]byte, 1001)}} {
+	for _, p := range []CompleteParams{
+		{"", "token", "default", nil},
+		{"task", "", "default", nil},
+		{"task", "token", "default", make([]byte, 1001)},
+		{"task", "token", "", nil},
+	} {
 		if applied, err := Complete(ctx, rdb, p); applied || !errors.Is(err, ErrReportArgument) {
 			t.Fatalf("complete accepted invalid params %v %v", applied, err)
 		}
 	}
-	for _, p := range []FailureParams{{"", "token", "error"}, {"task", "", "error"}, {"task", "token", ""}, {"task", "token", strings.Repeat("a", 4097)}} {
+	for _, p := range []FailureParams{{"", "token", "default", "error"}, {"task", "", "default", "error"}, {"task", "token", "default", ""}, {"task", "token", "default", strings.Repeat("a", 4097)}} {
 		if applied, err := ReportFailure(ctx, rdb, p); applied || !errors.Is(err, ErrReportArgument) {
 			t.Fatalf("failure accepted invalid params %v %v", applied, err)
 		}

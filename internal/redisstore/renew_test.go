@@ -17,7 +17,7 @@ func TestRenewAppliedAndRejection(t *testing.T) {
 			cmd.(*redis.Cmd).SetVal(response)
 			return nil
 		})
-		applied, err := Renew(context.Background(), rdb, RenewParams{TaskID: "task", AttemptToken: "token", LeaseDurationMS: 30000})
+		applied, err := Renew(context.Background(), rdb, RenewParams{ExpectedQueue: "default", TaskID: "task", AttemptToken: "token", LeaseDurationMS: 30000})
 		if err != nil || applied != (response == 1) || calls != 1 {
 			t.Fatalf("response=%v applied=%v err=%v calls=%d", response, applied, err, calls)
 		}
@@ -25,12 +25,19 @@ func TestRenewAppliedAndRejection(t *testing.T) {
 }
 
 func TestRenewValidationResponsesAndErrors(t *testing.T) {
-	p := RenewParams{TaskID: "id", AttemptToken: "token", LeaseDurationMS: 1}
+	p := RenewParams{ExpectedQueue: "default", TaskID: "id", AttemptToken: "token", LeaseDurationMS: 1}
 	if applied, err := Renew(context.Background(), nil, p); applied || !errors.Is(err, ErrRenewArgument) {
 		t.Fatalf("applied=%v err=%v", applied, err)
 	}
 	rdb := claimHookClient(t, func(context.Context, redis.Cmder) error { t.Fatal("invalid input sent command"); return nil })
-	for _, bad := range []RenewParams{{"", "token", 1}, {"id", "", 1}, {"id", "token", 0}, {"id", "token", -1}, {"id", "token", maxExactInteger + 1}} {
+	for _, bad := range []RenewParams{
+		{"", "token", "default", 1},
+		{"id", "", "default", 1},
+		{"id", "token", "default", 0},
+		{"id", "token", "default", -1},
+		{"id", "token", "default", maxExactInteger + 1},
+		{"id", "token", "", 1},
+	} {
 		if applied, err := Renew(context.Background(), rdb, bad); applied || !errors.Is(err, ErrRenewArgument) {
 			t.Fatalf("params=%+v applied=%v err=%v", bad, applied, err)
 		}

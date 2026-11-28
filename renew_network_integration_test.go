@@ -164,11 +164,11 @@ func testServerTCPDeadline(t *testing.T, operation string) {
 			var applied bool
 			switch operation {
 			case "renew":
-				applied, err = redisstore.Renew(ctx, client, redisstore.RenewParams{TaskID: "task", AttemptToken: "token", LeaseDurationMS: 30000})
+				applied, err = redisstore.Renew(ctx, client, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "task", AttemptToken: "token", LeaseDurationMS: 30000})
 			case "complete":
-				applied, err = redisstore.Complete(ctx, client, redisstore.CompleteParams{TaskID: "task", AttemptToken: "token"})
+				applied, err = redisstore.Complete(ctx, client, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: "task", AttemptToken: "token"})
 			case "ReportFailure":
-				applied, err = redisstore.ReportFailure(ctx, client, redisstore.FailureParams{TaskID: "task", AttemptToken: "token", ErrorMessage: "error"})
+				applied, err = redisstore.ReportFailure(ctx, client, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: "task", AttemptToken: "token", ErrorMessage: "error"})
 			case "reclaim leases":
 				err = redisstore.ReclaimLeases(ctx, client)
 			case "schedule retries":

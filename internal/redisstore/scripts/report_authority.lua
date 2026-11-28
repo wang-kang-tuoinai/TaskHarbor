@@ -13,6 +13,8 @@ if status ~= 'running' then return 0 end
 local token = redis.call('HGET', meta, 'attempt_token')
 if token == false or token == '' then return inconsistent('missing attempt token') end
 if token ~= ARGV[2] then return 0 end
+-- 通过当前 token 校验后再核对归属，确保写入索引属于本次执行。
+if redis.call('HGET', meta, 'queue') ~= ARGV[4] then return inconsistent('missing or mismatched queue') end
 local active_type = redis.call('TYPE', KEYS[2]).ok
 local lease_type = redis.call('TYPE', KEYS[3]).ok
 if active_type ~= 'none' and active_type ~= 'set' then return inconsistent('active must be a set') end

@@ -143,7 +143,7 @@ func TestExecutionKnownLossSuppressesAllReporting(t *testing.T) {
 					s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports <- struct{}{} }
 					s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { reports <- struct{}{} }
 					s.slots <- struct{}{}
-					done, err := s.acceptExecution(parent, &Task{ID: "task", Type: "job", Attempts: 1}, executionKey{taskID: "task", attemptToken: "token"}, time.Second)
+					done, err := s.acceptExecution(parent, &Task{ID: "task", Type: "job", Attempts: 1}, executionKey{taskID: "task", attemptToken: "token"}, DefaultQueue, time.Second)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -221,7 +221,7 @@ func TestExecutionKnownLossAtReportingBoundary(t *testing.T) {
 				s.onComplete = func(ctx context.Context, record *execution, _ executionKey, _ []byte) { reports <- struct{}{} }
 				s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { reports <- struct{}{} }
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job"}, key, time.Second)
+				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job"}, key, DefaultQueue, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}

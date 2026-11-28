@@ -32,7 +32,7 @@ func TestExecutionStoppedBeforeHandlerStart(t *testing.T) {
 					cancelParent(errExecutionCanceled)
 				}
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(parent, &Task{Type: "job"}, executionKey{"task", "token"}, time.Second)
+				done, err := s.acceptExecution(parent, &Task{Type: "job"}, executionKey{"task", "token"}, DefaultQueue, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -79,7 +79,7 @@ func TestExecutionSuccess(t *testing.T) {
 			t.Error("success entered failure branch")
 		}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1, Payload: []byte("payload")}, key, time.Second)
+		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1, Payload: []byte("payload")}, key, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestExecutionHandlerPanic(t *testing.T) {
 			}
 		}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1}, key, time.Second)
+		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1}, key, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestExecutionHandlerError(t *testing.T) {
 			}
 		}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1}, key, time.Second)
+		done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1}, key, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestExecutionUnknownHandler(t *testing.T) {
 			}
 		}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), task, key, time.Second)
+		done, err := s.acceptExecution(context.Background(), task, key, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,7 +223,7 @@ func TestExecutionTimeoutRetainsSlotUntilHandlerExit(t *testing.T) {
 		s.slots <- struct{}{}
 		s.slots <- struct{}{}        // 另一占用用于检查不会重复归还别的执行槽。
 		time.Sleep(10 * time.Second) // 虚拟时间：领取和接收前的准备不消耗执行超时。
-		done, err := s.acceptExecution(context.Background(), task, key, time.Second)
+		done, err := s.acceptExecution(context.Background(), task, key, DefaultQueue, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -286,7 +286,7 @@ func TestExecutionAbortBroadcast(t *testing.T) {
 		for i := range 3 {
 			s.slots <- struct{}{}
 			key := executionKey{taskID: "shared-task", attemptToken: fmt.Sprintf("attempt-%d", i)}
-			finished, err := s.acceptExecution(context.Background(), &Task{ID: key.taskID, Type: "job", Attempts: 1, Payload: []byte{byte(i)}}, key, time.Hour)
+			finished, err := s.acceptExecution(context.Background(), &Task{ID: key.taskID, Type: "job", Attempts: 1, Payload: []byte{byte(i)}}, key, DefaultQueue, time.Hour)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -358,7 +358,7 @@ func TestExecutionOldCleanupPreservesNewAttempt(t *testing.T) {
 		}
 		s.onFailure = func(ctx context.Context, record *execution, _ executionKey, _ error) { t.Error("unexpected failure") }
 		s.slots <- struct{}{}
-		oldDone, err := s.acceptExecution(context.Background(), &Task{ID: oldKey.taskID, Type: "job", Attempts: 1}, oldKey, time.Hour)
+		oldDone, err := s.acceptExecution(context.Background(), &Task{ID: oldKey.taskID, Type: "job", Attempts: 1}, oldKey, DefaultQueue, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -368,7 +368,7 @@ func TestExecutionOldCleanupPreservesNewAttempt(t *testing.T) {
 			t.Fatal("handler slot and ongoing result handling have different lifetimes")
 		}
 		s.slots <- struct{}{}
-		newDone, err := s.acceptExecution(context.Background(), &Task{ID: newKey.taskID, Type: "job", Attempts: 2}, newKey, time.Hour)
+		newDone, err := s.acceptExecution(context.Background(), &Task{ID: newKey.taskID, Type: "job", Attempts: 2}, newKey, DefaultQueue, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -416,7 +416,7 @@ func TestExecutionCompetingSignalsChooseOneBranch(t *testing.T) {
 					}
 				}
 				s.slots <- struct{}{}
-				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1}, key, time.Second)
+				done, err := s.acceptExecution(context.Background(), &Task{ID: "task", Type: "job", Attempts: 1}, key, DefaultQueue, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}

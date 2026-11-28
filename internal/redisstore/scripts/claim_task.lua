@@ -1,5 +1,5 @@
 -- Claim 不具备请求幂等性；所有可预见检查必须在第一笔写入之前完成。
-if #KEYS ~= 3 or #ARGV ~= 3 then
+if #KEYS ~= 3 or #ARGV ~= 4 then
     return redis.error_reply('ERR invalid claim keys or arguments')
 end
 
@@ -19,10 +19,10 @@ end
 local active_type = redis.call('TYPE', KEYS[2]).ok
 local lease_type = redis.call('TYPE', KEYS[3]).ok
 if active_type ~= 'none' and active_type ~= 'set' then
-    return redis.error_reply('WRONGTYPE active key must be a set')
+    return redis.error_reply('WRONGTYPE task ' .. task_id .. ': active key must be a set')
 end
 if lease_type ~= 'none' and lease_type ~= 'zset' then
-    return redis.error_reply('WRONGTYPE lease key must be a zset')
+    return redis.error_reply('WRONGTYPE task ' .. task_id .. ': lease key must be a zset')
 end
 local meta = 'taskq:meta:' .. task_id
 local meta_type = redis.call('TYPE', meta).ok
@@ -30,7 +30,7 @@ if meta_type == 'none' then
     return inconsistent('missing task hash')
 end
 if meta_type ~= 'hash' then
-    return redis.error_reply('WRONGTYPE task meta must be a hash')
+    return redis.error_reply('WRONGTYPE task ' .. task_id .. ': meta must be a hash')
 end
 
 local fields = redis.call('HMGET', meta, 'task_id', 'task_type', 'payload', 'queue',
@@ -41,7 +41,7 @@ for i = 1, 8 do
         return inconsistent('missing required field ' .. i)
     end
 end
-if task_id == '' or fields[1] ~= task_id or fields[2] == '' or fields[4] ~= 'default' or fields[5] ~= 'pending' then
+if task_id == '' or fields[1] ~= task_id or fields[2] == '' or fields[4] ~= ARGV[4] or fields[5] ~= 'pending' then
     return inconsistent('invalid task identity, queue or status')
 end
 
@@ -76,7 +76,7 @@ local now = redis.call('TIME')
 local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 local lease_ms = tonumber(ARGV[3]) -- Go 边界已校验正整数及精确表示范围。
 if now_ms > 9007199254740991 - lease_ms then
-    return redis.error_reply('ERR claim lease timestamp exceeds exact integer range')
+    return redis.error_reply('ERR task ' .. task_id .. ': claim lease timestamp exceeds exact integer range')
 end
 local claimed_at = string.format('%.0f', now_ms)
 local expires_at = string.format('%.0f', now_ms + lease_ms)

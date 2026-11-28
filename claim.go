@@ -19,58 +19,65 @@ const (
 func (s *server) claimLoop() {
 	defer close(s.claimDone)
 	backoff := claimBackoffInitial
+	nextQueue := 0
+claiming:
 	for {
 		select {
 		case <-s.claimCtx.Done():
 			return
 		case s.slots <- struct{}{}:
 		}
-		if s.claimCtx.Err() != nil {
-			<-s.slots
-			return
-		}
-		token, err := s.newAttemptToken()
-		if err != nil {
-			<-s.slots
-			s.reportFatal(fmt.Errorf("generate claim attempt token: %w", err))
-			return
-		}
-		// 先取得槽并生成身份；连接等待、读写和 NOSCRIPT 回退共用这次期限。
-		request, cancel := context.WithTimeout(s.claimCtx, claimRequestTimeout)
-		claimed, err := redisstore.Claim(request, s.claimClient, redisstore.ClaimParams{
-			OwnerID: s.ownerID, AttemptToken: token, LeaseDurationMS: s.leaseDuration.Milliseconds(),
-		})
-		cancel()
-		if err != nil {
-			<-s.slots
+		for range s.queues {
+			// 持槽时只有明确的空响应允许继续探测，停领检查也覆盖空响应后的下一次请求。
 			if s.claimCtx.Err() != nil {
+				<-s.slots
 				return
 			}
-			if transientRedisError(err) {
-				if !waitContext(s.claimCtx, backoff) {
+			queue := s.queues[nextQueue]
+			nextQueue = (nextQueue + 1) % len(s.queues)
+			token, err := s.newAttemptToken()
+			if err != nil {
+				<-s.slots
+				s.reportFatal(fmt.Errorf("generate claim attempt token for queue %q: %w", queue, err))
+				return
+			}
+			// 每次探测独立计时；连接等待、读写和 NOSCRIPT 回退共用这次期限。
+			request, cancel := context.WithTimeout(s.claimCtx, claimRequestTimeout)
+			claimed, err := redisstore.Claim(request, s.claimClient, redisstore.ClaimParams{
+				Queue: queue, OwnerID: s.ownerID, AttemptToken: token, LeaseDurationMS: s.leaseDuration.Milliseconds(),
+			})
+			cancel()
+			if err != nil {
+				<-s.slots
+				if s.claimCtx.Err() != nil {
 					return
 				}
-				backoff = min(backoff*2, claimBackoffMax)
-				continue
-			}
-			s.reportFatal(err)
-			return
-		}
-		backoff = claimBackoffInitial
-		if claimed == nil {
-			<-s.slots
-			if !waitContext(s.claimCtx, claimPollInterval) {
+				if transientRedisError(err) {
+					if !waitContext(s.claimCtx, backoff) {
+						return
+					}
+					backoff = min(backoff*2, claimBackoffMax)
+					continue claiming
+				}
+				s.reportFatal(fmt.Errorf("claim queue %q: %w", queue, err))
 				return
 			}
-			continue
+			backoff = claimBackoffInitial
+			if claimed == nil {
+				continue
+			}
+			// 明确成功的在途请求仍然接管。acceptExecution 负责归还槽，包括登记失败时。
+			_, err = s.acceptExecution(context.Background(), &Task{
+				ID: claimed.TaskID, Type: claimed.TaskType, Payload: claimed.Payload, Attempts: claimed.Attempts,
+			}, executionKey{taskID: claimed.TaskID, attemptToken: token}, claimed.Queue, time.Duration(claimed.ExecutionTimeoutMS)*time.Millisecond)
+			if err != nil {
+				s.reportFatal(fmt.Errorf("accept claimed task %q from queue %q: %w", claimed.TaskID, queue, err))
+				return
+			}
+			continue claiming
 		}
-		// 响应已限制执行时长在 24 小时内，转换为 time.Duration 不会溢出。
-		// acceptExecution 接管槽，包括它自身拒绝登记的情况，循环不能再次归还。
-		_, err = s.acceptExecution(context.Background(), &Task{
-			ID: claimed.TaskID, Type: claimed.TaskType, Payload: claimed.Payload, Attempts: claimed.Attempts,
-		}, executionKey{taskID: claimed.TaskID, attemptToken: token}, time.Duration(claimed.ExecutionTimeoutMS)*time.Millisecond)
-		if err != nil {
-			s.reportFatal(fmt.Errorf("accept claimed task %q: %w", claimed.TaskID, err))
+		<-s.slots
+		if !waitContext(s.claimCtx, claimPollInterval) {
 			return
 		}
 	}

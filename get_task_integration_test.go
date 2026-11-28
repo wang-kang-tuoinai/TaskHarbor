@@ -32,7 +32,7 @@ func TestGetTaskRedisLifecycle(t *testing.T) {
 		t.Fatalf("first running attempt = %+v", running)
 	}
 	applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{
-		TaskID: id, AttemptToken: "first", ErrorMessage: "first failure",
+		ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "first", ErrorMessage: "first failure",
 	})
 	if err != nil || !applied {
 		t.Fatalf("prepare failure: applied=%v err=%v", applied, err)
@@ -54,7 +54,7 @@ func TestGetTaskRedisLifecycle(t *testing.T) {
 	}
 	mustClaimForCancel(t, rdb, id, "worker", "second")
 	result := []byte{0, 255, 128}
-	applied, err = redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: id, AttemptToken: "second", Result: result})
+	applied, err = redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "second", Result: result})
 	if err != nil || !applied {
 		t.Fatalf("prepare completion: applied=%v err=%v", applied, err)
 	}
@@ -90,7 +90,7 @@ func TestGetTaskRedisLifecycle(t *testing.T) {
 	mustSubmit(t, c, cancelRetryID, "job", nil, WithSubmitMaxRetry(1))
 	mustClaimForCancel(t, rdb, cancelRetryID, "worker", "attempt")
 	applied, err = redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{
-		TaskID: cancelRetryID, AttemptToken: "attempt", ErrorMessage: "failure before cancel",
+		ExpectedQueue: DefaultQueue, TaskID: cancelRetryID, AttemptToken: "attempt", ErrorMessage: "failure before cancel",
 	})
 	if err != nil || !applied {
 		t.Fatalf("prepare failure before cancel: applied=%v err=%v", applied, err)
@@ -124,7 +124,7 @@ func TestGetTaskRedisCompletionResultPresence(t *testing.T) {
 				t.Fatalf("result before completion = %q, want nil", task.Result)
 			}
 			mustClaimForCancel(t, rdb, tc.name, "worker", "attempt")
-			applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: tc.name, AttemptToken: "attempt", Result: tc.result})
+			applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: tc.name, AttemptToken: "attempt", Result: tc.result})
 			if err != nil || !applied {
 				t.Fatalf("prepare completion: applied=%v err=%v", applied, err)
 			}

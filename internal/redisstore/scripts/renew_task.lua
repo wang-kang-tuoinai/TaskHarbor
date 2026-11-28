@@ -1,4 +1,4 @@
-if #KEYS ~= 3 or #ARGV ~= 3 then
+if #KEYS ~= 3 or #ARGV ~= 4 then
     return redis.error_reply('ERR invalid renew keys or arguments')
 end
 
@@ -28,6 +28,11 @@ if token == false or token == '' then
 end
 if token ~= ARGV[2] then
     return 0
+end
+
+-- 仅当前执行尝试需要核对归属；旧 token 仍按正常拒绝处理。
+if redis.call('HGET', KEYS[1], 'queue') ~= ARGV[4] then
+    return inconsistent('missing or mismatched queue')
 end
 
 local active_type = redis.call('TYPE', KEYS[2]).ok
