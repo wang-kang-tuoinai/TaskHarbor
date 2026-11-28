@@ -1,8 +1,8 @@
 # 操作契约：complete
 
-## 多队列修订（已确认，待实施）
+## 所属队列
 
-本轮 execution 保存 Claim 已核对的所属队列。将它用于构造队列索引 key，同时作为 expectedQueue 传入每次 Lua 请求。先沿用状态和 token 的拒绝语义；对仍为 running 且 token 匹配的记录，写前核对 Hash 的 queue，缺失或错配按一致性错误零写入。随后沿用原有索引、租约和执行权检查。 队列语义及兼容边界见 [ADR-0011](adr/0011-multi-queue-routing.md)。下文固定 default 的示例描述首版。
+执行记录保存 Claim 已核对的所属队列。每次请求用该队列构造索引 key，并将名称作为 `expectedQueue` 传给 Lua。Lua 先检查状态和 token。任务仍为 running 且 token 匹配时，继续核对 Hash 的 queue，缺失或错配按一致性错误处理，两个队列均无写入。队列匹配后，再执行已有的索引与租约检查。[ADR-0011](adr/0011-multi-queue-routing.md)
 
 > 初版仅使用 Redis。一次调用只提交一个任务的一轮成功结果，成功终态统一为 completed。
 
