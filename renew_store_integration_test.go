@@ -28,7 +28,7 @@ func seedRenew(t *testing.T, rdb *redis.Client, id, token string) {
 		t.Fatal(err)
 	}
 	// 仅放入 Renew 所需字段，避免把无关配置缺失误判为本操作损坏。
-	if err := rdb.HSet(ctx, "taskq:meta:"+id, "status", "running", "attempt_token", token).Err(); err != nil {
+	if err := rdb.HSet(ctx, "taskq:meta:"+id, "status", "running", "attempt_token", token, "queue", DefaultQueue).Err(); err != nil {
 		t.Fatal(err)
 	}
 	if err := rdb.SAdd(ctx, claimActive, id).Err(); err != nil {
@@ -42,7 +42,7 @@ func seedRenew(t *testing.T, rdb *redis.Client, id, token string) {
 func TestRenewRedis(t *testing.T) {
 	rdb := startSubmitRedis(t)
 	ctx := context.Background()
-	p := redisstore.RenewParams{TaskID: "id", AttemptToken: "token", LeaseDurationMS: 30000}
+	p := redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "id", AttemptToken: "token", LeaseDurationMS: 30000}
 	seedRenew(t, rdb, "id", "token")
 	seedRenew(t, rdb, "other", "other-token")
 	hash := submitHash(t, rdb, "id")
@@ -148,7 +148,7 @@ func TestRenewRedisRejectionsAndConsistencyAreReadOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := claimSnapshot(t, rdb)
-			applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: "id", AttemptToken: "token", LeaseDurationMS: 30000})
+			applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "id", AttemptToken: "token", LeaseDurationMS: 30000})
 			if applied || tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("applied=%v err=%v want=%v", applied, err, tc.want)
 			}
@@ -163,7 +163,7 @@ func TestRenewRedisRejectionsAndConsistencyAreReadOnly(t *testing.T) {
 		}
 		seedRenew(t, rdb, "id", "token")
 		before := claimSnapshot(t, rdb)
-		applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: "id", AttemptToken: "token", LeaseDurationMS: 1<<53 - 1})
+		applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "id", AttemptToken: "token", LeaseDurationMS: 1<<53 - 1})
 		if applied || err == nil || !reflect.DeepEqual(before, claimSnapshot(t, rdb)) {
 			t.Fatalf("applied=%v err=%v", applied, err)
 		}
@@ -190,7 +190,7 @@ end}
 			t.Fatal(err)
 		}
 		before := claimSnapshot(t, rdb)
-		applied, err := rdb.Eval(ctx, prefix+string(source), []string{"taskq:meta:id", claimActive, claimLease}, "id", "token", 1000).Int64()
+		applied, err := rdb.Eval(ctx, prefix+string(source), []string{"taskq:meta:id", claimActive, claimLease}, "id", "token", 1000, DefaultQueue).Int64()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -221,7 +221,7 @@ func TestRenewRedisConcurrentTransition(t *testing.T) {
 			var wg sync.WaitGroup
 			for range 20 {
 				wg.Go(func() {
-					if _, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: "id", AttemptToken: "old", LeaseDurationMS: 30000}); err != nil {
+					if _, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "id", AttemptToken: "old", LeaseDurationMS: 30000}); err != nil {
 						t.Error(err)
 					}
 				})
@@ -235,7 +235,7 @@ return 1`, []string{"taskq:meta:id", claimActive, claimLease}, status, "id", fut
 			}
 			wg.Wait()
 			before := claimSnapshot(t, rdb)
-			if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: "id", AttemptToken: "old", LeaseDurationMS: 30000}); applied || err != nil {
+			if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "id", AttemptToken: "old", LeaseDurationMS: 30000}); applied || err != nil {
 				t.Fatalf("old applied=%v err=%v", applied, err)
 			}
 			if !reflect.DeepEqual(before, claimSnapshot(t, rdb)) {
@@ -253,7 +253,7 @@ return 1`, []string{"taskq:meta:id", claimActive, claimLease}, status, "id", fut
 func TestRenewRedisLostReply(t *testing.T) {
 	admin := startSubmitRedis(t)
 	ctx := context.Background()
-	p := redisstore.RenewParams{TaskID: "id", AttemptToken: "token", LeaseDurationMS: 60000}
+	p := redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "id", AttemptToken: "token", LeaseDurationMS: 60000}
 	if _, err := redisstore.Renew(ctx, admin, p); err != nil {
 		t.Fatal(err)
 	}

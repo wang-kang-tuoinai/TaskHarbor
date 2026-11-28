@@ -23,6 +23,7 @@ const maxExactInteger int64 = 1<<53 - 1 // Redis Lua 数值和 ZSET score 的精
 // ClaimParams 是一次独立领取的参数，时长单位为整数毫秒。
 // 调用方为每次调用提供唯一 AttemptToken；它不是请求去重 ID。
 type ClaimParams struct {
+	Queue           string
 	OwnerID         string
 	AttemptToken    string
 	LeaseDurationMS int64
@@ -40,7 +41,7 @@ type ClaimResult struct {
 	AttemptToken       string
 }
 
-// Claim 从 default 原子领取一次；空队列返回 nil, nil。
+// Claim 从指定队列原子领取一次；空队列返回 nil, nil。
 // rdb 必须由调用方禁用自动重试（构造时 MaxRetries=-1）。这里不修改共享配置，
 // 也不重放结果未知的请求；只有明确 NOSCRIPT 才由 Script.Run 回退到 EVAL。
 // 存储和网络错误保留底层错误链，供领取循环分类。
@@ -48,9 +49,13 @@ func Claim(ctx context.Context, rdb *redis.Client, p ClaimParams) (*ClaimResult,
 	if rdb == nil || p.OwnerID == "" || p.AttemptToken == "" || p.LeaseDurationMS <= 0 || p.LeaseDurationMS > maxExactInteger {
 		return nil, fmt.Errorf("%w: client, owner, token and positive exact lease milliseconds required", ErrClaimArgument)
 	}
+	if err := ValidateQueueName(p.Queue); err != nil {
+		return nil, fmt.Errorf("%w: queue %q: %w", ErrClaimArgument, p.Queue, err)
+	}
+	prefix := "taskq:" + p.Queue + ":"
 	response, err := claimScript.Run(ctx, rdb,
-		[]string{"taskq:default:pending", "taskq:default:active", "taskq:default:lease"},
-		p.OwnerID, p.AttemptToken, p.LeaseDurationMS,
+		[]string{prefix + "pending", prefix + "active", prefix + "lease"},
+		p.OwnerID, p.AttemptToken, p.LeaseDurationMS, p.Queue,
 	).Result()
 	if err != nil {
 		if redis.HasErrorPrefix(err, "TASKQ_CLAIM_INCONSISTENT") {
@@ -83,7 +88,7 @@ func parseClaimResponse(response any, p ClaimParams) (*ClaimResult, error) {
 	attempts, attemptsErr := strconv.ParseUint(fields[4], 10, 31)
 	timeout, timeoutErr := strconv.ParseUint(fields[5], 10, 64)
 	// 响应是新的信任边界：拒绝无法安全交给执行端的内容，不根据请求猜测任务。
-	if fields[0] == "" || fields[1] == "" || fields[3] != "default" ||
+	if fields[0] == "" || fields[1] == "" || fields[3] != p.Queue ||
 		attemptsErr != nil || attempts == 0 || timeoutErr != nil || timeout == 0 || timeout > 86400000 {
 		return nil, fmt.Errorf("%w: invalid task, queue, attempts or execution timeout", ErrClaimResponse)
 	}

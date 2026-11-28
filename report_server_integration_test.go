@@ -312,7 +312,7 @@ func TestReportingServerFatalKeepsHealthyRenewal(t *testing.T) {
 	s.reportClient.AddHook(observeRenewHook{process: func(next redis.ProcessHook) redis.ProcessHook {
 		return func(ctx context.Context, cmd redis.Cmder) error {
 			args := cmd.Args()
-			if (cmd.Name() == "evalsha" || cmd.Name() == "eval") && args[len(args)-3] == "bad" {
+			if (cmd.Name() == "evalsha" || cmd.Name() == "eval") && args[len(args)-4] == "bad" {
 				return startRedisError("NOPERM report denied")
 			}
 			return next(ctx, cmd)

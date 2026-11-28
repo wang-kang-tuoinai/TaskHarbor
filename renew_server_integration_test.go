@@ -113,7 +113,7 @@ func TestRenewRedisServerKeepsLongTaskManaged(t *testing.T) {
 func TestRenewRedisServerLostReplyRevalidatesNextRound(t *testing.T) {
 	admin := startSubmitRedis(t)
 	ctx := context.Background()
-	if _, err := redisstore.Renew(ctx, admin, redisstore.RenewParams{TaskID: "warm", AttemptToken: "warm", LeaseDurationMS: 6000}); err != nil {
+	if _, err := redisstore.Renew(ctx, admin, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "warm", AttemptToken: "warm", LeaseDurationMS: 6000}); err != nil {
 		t.Fatal(err)
 	}
 	mustSubmit(t, integrationClient(t, admin), "task", "job", nil, WithSubmitExecutionTimeout(20*time.Second))

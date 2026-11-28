@@ -24,15 +24,20 @@ type claimTCPRequest struct {
 	connection int
 	command    string
 	token      string
+	queue      string
 	received   time.Time
 }
 
 func claimTCPCommand(connection int, args []string) claimTCPRequest {
-	return claimTCPRequest{connection: connection, command: strings.ToLower(args[0]), token: args[7], received: time.Now()}
+	return claimTCPRequest{connection: connection, command: strings.ToLower(args[0]), token: args[7], queue: args[9], received: time.Now()}
 }
 
 func isClaimTCPCommand(args []string) bool {
-	return len(args) == 9 && args[3] == claimPending && args[4] == claimActive && args[5] == claimLease
+	if len(args) != 10 {
+		return false
+	}
+	prefix := "taskq:" + args[9] + ":"
+	return args[3] == prefix+"pending" && args[4] == prefix+"active" && args[5] == prefix+"lease"
 }
 
 func serveClaimTCP(t *testing.T, reply func(int, []string) string) string {
@@ -109,9 +114,9 @@ func claimTCPClient(t *testing.T, addr string, read, write time.Duration) *redis
 	return rdb
 }
 
-func startClaimServer(t *testing.T, rdb *redis.Client, handler HandlerFunc) Server {
+func startClaimServer(t *testing.T, rdb *redis.Client, handler HandlerFunc, opts ...Option) Server {
 	t.Helper()
-	s, err := NewServer(rdb, WithConcurrency(1))
+	s, err := NewServer(rdb, append([]Option{WithConcurrency(1)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +184,7 @@ func TestClaimTCPRequestBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			prewarmed := int(pingConnection.Load())
-			s := startClaimServer(t, rdb, unexpectedClaimHandler(t))
+			s := startClaimServer(t, rdb, unexpectedClaimHandler(t), WithQueues("mail", "sms"))
 			first := awaitClaimSignal(t, requests, time.Second)
 			if first.connection != prewarmed {
 				t.Fatalf("Claim connection %d differs from caller's prewarmed connection %d", first.connection, prewarmed)
@@ -190,6 +195,9 @@ func TestClaimTCPRequestBudget(t *testing.T) {
 			}
 			if first.token == "" || next.token == "" || first.token == next.token {
 				t.Errorf("independent Claim tokens = %q, %q", first.token, next.token)
+			}
+			if first.queue != "mail" || next.queue != "sms" {
+				t.Errorf("timeout did not advance Claim to next queue: %q then %q", first.queue, next.queue)
 			}
 			select {
 			case err := <-s.Errors():
@@ -246,6 +254,47 @@ func TestClaimTCPShutdownWaitsForRequestDeadline(t *testing.T) {
 	case err := <-s.Errors():
 		t.Errorf("unexpected fatal error: %v", err)
 	default:
+	}
+}
+
+func TestClaimTCPEmptyRoundAndShutdown(t *testing.T) {
+	requests := make(chan claimTCPRequest, 16)
+	addr := serveClaimTCP(t, func(connection int, args []string) string {
+		if isClaimTCPCommand(args) {
+			select {
+			case requests <- claimTCPCommand(connection, args):
+			default:
+			}
+			return "*0\r\n"
+		}
+		return claimTCPDefaultReply(args)
+	})
+	rdb := claimTCPClient(t, addr, time.Second, time.Second)
+	s := startClaimServer(t, rdb, unexpectedClaimHandler(t), WithQueues("mail", "sms"))
+	tokens := make(map[string]bool)
+	var lastRoundEnd time.Time
+	for range 2 {
+		for _, queue := range []string{"mail", "sms"} {
+			req := awaitClaimSignal(t, requests, time.Second)
+			if req.queue != queue || req.token == "" || tokens[req.token] {
+				t.Fatalf("Claim = %+v, want queue %q and a fresh token", req, queue)
+			}
+			tokens[req.token] = true
+			if queue == "mail" && !lastRoundEnd.IsZero() && req.received.Sub(lastRoundEnd) < claimPollInterval {
+				t.Fatal("next round started before waiting after two empty replies")
+			}
+			if queue == "sms" {
+				lastRoundEnd = req.received
+			}
+		}
+	}
+	shutdownClaimServer(t, s)
+	select {
+	case req := <-requests:
+		t.Fatalf("Claim continued after stop: %+v", req)
+	case err := <-s.Errors():
+		t.Fatalf("empty queue reported a fatal error: %v", err)
+	case <-time.After(2 * claimPollInterval):
 	}
 }
 
@@ -474,7 +523,7 @@ func TestClaimRedisLostResponseThroughServer(t *testing.T) {
 	}
 	client := integrationClient(t, admin)
 	mustSubmit(t, client, "first", "job", nil)
-	mustSubmit(t, client, "second", "job", nil)
+	mustSubmit(t, client, "second", "job", nil, WithSubmitQueue("mail"))
 
 	var armed, dropped, commandConn atomic.Bool
 	var calls atomic.Int32
@@ -516,10 +565,10 @@ func TestClaimRedisLostResponseThroughServer(t *testing.T) {
 		started <- task.ID
 		<-releaseHandler
 		return nil
-	})
+	}, WithQueues(DefaultQueue, "mail"))
 	first := awaitClaimSignal(t, requests, time.Second)
 	second := awaitClaimSignal(t, requests, 2*time.Second)
-	if !dropped.Load() || first.token == "" || second.token == "" || first.token == second.token {
+	if !dropped.Load() || first.token == "" || second.token == "" || first.token == second.token || first.queue != DefaultQueue || second.queue != "mail" {
 		t.Fatalf("expected an independent Claim after a lost response: dropped=%v first=%+v second=%+v", dropped.Load(), first, second)
 	}
 	checkTask := func(id, status string, attempts int) {

@@ -332,12 +332,12 @@ func TestCancelServerRedisBeforeExecutionRegistration(t *testing.T) {
 	close(releaseClaim)
 	awaitReclaimSignal(t, admitted) // 记录早到窗口的既定限制，以免将其描述为保证不启动。
 	if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{
-		TaskID: id, AttemptToken: token, LeaseDurationMS: 30_000,
+		ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: token, LeaseDurationMS: 30_000,
 	}); err != nil || applied {
 		t.Fatalf("canceled task renewed: %v, %v", applied, err)
 	}
 	if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{
-		TaskID: id, AttemptToken: token, Result: []byte("late"),
+		ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: token, Result: []byte("late"),
 	}); err != nil || applied {
 		t.Fatalf("canceled task accepted result: %v, %v", applied, err)
 	}

@@ -166,7 +166,7 @@ func TestCancelRunningRedis(t *testing.T) {
 func mustClaimForCancel(t *testing.T, rdb *redis.Client, taskID, owner, token string) {
 	t.Helper()
 	claimed, err := redisstore.Claim(context.Background(), rdb, redisstore.ClaimParams{
-		OwnerID: owner, AttemptToken: token, LeaseDurationMS: 30_000,
+		Queue: DefaultQueue, OwnerID: owner, AttemptToken: token, LeaseDurationMS: 30_000,
 	})
 	if err != nil || claimed == nil || claimed.TaskID != taskID {
 		t.Fatalf("claim %q: got %+v, %v", taskID, claimed, err)
@@ -181,7 +181,7 @@ func TestCancelRetryWaitRedis(t *testing.T) {
 	mustSubmit(t, client, id, "job", nil, WithSubmitMaxRetry(1))
 	mustClaimForCancel(t, rdb, id, "worker", token)
 	ok, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{
-		TaskID: id, AttemptToken: token, ErrorMessage: "first failure",
+		ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: token, ErrorMessage: "first failure",
 	})
 	if err != nil || !ok {
 		t.Fatalf("ReportFailure = %v, %v", ok, err)
@@ -266,7 +266,7 @@ func TestCancelRejectsInconsistentRedisStateWithoutWrites(t *testing.T) {
 			}
 			if tc.state == "retry_wait" {
 				ok, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{
-					TaskID: id, AttemptToken: "attempt", ErrorMessage: "first failure",
+					ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "attempt", ErrorMessage: "first failure",
 				})
 				if err != nil || !ok {
 					t.Fatalf("expected retry_wait: %v, %v", ok, err)
@@ -298,17 +298,17 @@ func TestCancelCompetingRedisOperations(t *testing.T) {
 		stateIfApplied string
 	}{
 		{"claim", true, func(id, token string) (bool, error) {
-			got, err := redisstore.Claim(ctx, rdb, redisstore.ClaimParams{OwnerID: "worker", AttemptToken: token, LeaseDurationMS: 30_000})
+			got, err := redisstore.Claim(ctx, rdb, redisstore.ClaimParams{Queue: DefaultQueue, OwnerID: "worker", AttemptToken: token, LeaseDurationMS: 30_000})
 			return got != nil && got.TaskID == id, err
 		}, ""},
 		{"renew", false, func(id, token string) (bool, error) {
-			return redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: id, AttemptToken: token, LeaseDurationMS: 30_000})
+			return redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: token, LeaseDurationMS: 30_000})
 		}, ""},
 		{"complete", false, func(id, token string) (bool, error) {
-			return redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: id, AttemptToken: token, Result: []byte("result")})
+			return redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: token, Result: []byte("result")})
 		}, "completed"},
 		{"failure", false, func(id, token string) (bool, error) {
-			return redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: id, AttemptToken: token, ErrorMessage: "failure"})
+			return redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: token, ErrorMessage: "failure"})
 		}, "failed"},
 		{"reclaim", false, func(id, _ string) (bool, error) {
 			err := redisstore.ReclaimLeases(ctx, rdb)

@@ -168,9 +168,9 @@ func (p *networkProxy) serve(pair *proxyConnection) {
 
 func (p *networkProxy) block(request frame) bool {
 	p.mu.Lock()
-	if len(request.parts) == 9 {
+	if len(request.parts) == 10 {
 		args := request.parts
-		// complete 的三 key 请求末尾为 SetResult 的 JSON，Renew 末尾为租约毫秒。
+		// 同样是三 key 请求，complete 的业务内容来自 SetResult，Renew 对应位置是租约毫秒。
 		if (args[0].text == "evalsha" || args[0].text == "eval") && args[2].text == "3" &&
 			args[6].text == p.armed && p.mode == "open" && strings.HasPrefix(args[8].text, "{") {
 			p.isolateLocked("blackhole", p.armed)

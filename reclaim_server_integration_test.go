@@ -34,10 +34,10 @@ func TestReclaimServersCompeteOnCurrentRedisState(t *testing.T) {
 	for _, id := range []string{"renewed", "completed", "canceled"} {
 		seedReclaimCandidate(t, rdb, id, false, float64(time.Now().Add(time.Minute).UnixMilli()))
 	}
-	if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: "renewed", AttemptToken: "old-renewed", LeaseDurationMS: 120000}); !applied || err != nil {
+	if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "renewed", AttemptToken: "old-renewed", LeaseDurationMS: 120000}); !applied || err != nil {
 		t.Fatalf("renew applied=%v err=%v", applied, err)
 	}
-	if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: "completed", AttemptToken: "old-completed"}); !applied || err != nil {
+	if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: "completed", AttemptToken: "old-completed"}); !applied || err != nil {
 		t.Fatalf("completion applied=%v err=%v", applied, err)
 	}
 	// Cancel 尚未实现，夹具只建立取消成功后的合法终态与索引关系。
@@ -177,13 +177,13 @@ func TestReclaimServerRecoversTasksAfterAnotherServerStops(t *testing.T) {
 	if current["attempt_token"] == "" || current["attempt_token"] == oldToken || current["owner_id"] == old["owner_id"] {
 		t.Fatalf("new execution reused old identity: %v", current)
 	}
-	if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{TaskID: "abandoned", AttemptToken: oldToken, LeaseDurationMS: 30000}); applied || err != nil {
+	if applied, err := redisstore.Renew(ctx, rdb, redisstore.RenewParams{ExpectedQueue: DefaultQueue, TaskID: "abandoned", AttemptToken: oldToken, LeaseDurationMS: 30000}); applied || err != nil {
 		t.Fatalf("old renew applied=%v err=%v", applied, err)
 	}
-	if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{TaskID: "abandoned", AttemptToken: oldToken}); applied || err != nil {
+	if applied, err := redisstore.Complete(ctx, rdb, redisstore.CompleteParams{ExpectedQueue: DefaultQueue, TaskID: "abandoned", AttemptToken: oldToken}); applied || err != nil {
 		t.Fatalf("old completion applied=%v err=%v", applied, err)
 	}
-	if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: "abandoned", AttemptToken: oldToken, ErrorMessage: "late failure"}); applied || err != nil {
+	if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: "abandoned", AttemptToken: oldToken, ErrorMessage: "late failure"}); applied || err != nil {
 		t.Fatalf("old failure applied=%v err=%v", applied, err)
 	}
 	if err := redisstore.ReclaimLeases(ctx, rdb); err != nil {

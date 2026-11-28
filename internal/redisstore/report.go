@@ -26,9 +26,10 @@ var (
 
 // CompleteParams 保存已经序列化的成功结果，空值也须写入 result。
 type CompleteParams struct {
-	TaskID       string
-	AttemptToken string
-	Result       []byte
+	TaskID        string
+	AttemptToken  string
+	ExpectedQueue string
+	Result        []byte
 }
 
 // Complete 执行一次原子成功上报；仅 err=nil 时 applied 有确定含义。
@@ -37,15 +38,17 @@ func Complete(ctx context.Context, rdb *redis.Client, p CompleteParams) (bool, e
 	if len(p.Result) > MaxResultSize {
 		return false, fmt.Errorf("%w: result exceeds %d bytes", ErrReportArgument, MaxResultSize)
 	}
-	return runReport(ctx, rdb, completeScript, "complete", p.TaskID, p.AttemptToken, p.Result,
-		[]string{"taskq:meta:" + p.TaskID, "taskq:default:active", "taskq:default:lease"})
+	prefix := "taskq:" + p.ExpectedQueue + ":"
+	return runReport(ctx, rdb, completeScript, "complete", p.TaskID, p.AttemptToken, p.ExpectedQueue, p.Result,
+		[]string{"taskq:meta:" + p.TaskID, prefix + "active", prefix + "lease"})
 }
 
 // FailureParams 保存首次请求前已经固定的失败诊断。
 type FailureParams struct {
-	TaskID       string
-	AttemptToken string
-	ErrorMessage string
+	TaskID        string
+	AttemptToken  string
+	ExpectedQueue string
+	ErrorMessage  string
 }
 
 // ReportFailure 执行一次原子失败上报，由已保存的尝试预算决定目标状态。
@@ -54,24 +57,28 @@ func ReportFailure(ctx context.Context, rdb *redis.Client, p FailureParams) (boo
 	if p.ErrorMessage == "" || len(p.ErrorMessage) > MaxErrorMessageSize {
 		return false, fmt.Errorf("%w: error message must contain 1..%d bytes", ErrReportArgument, MaxErrorMessageSize)
 	}
-	return runReport(ctx, rdb, failureScript, "ReportFailure", p.TaskID, p.AttemptToken, p.ErrorMessage,
-		[]string{"taskq:meta:" + p.TaskID, "taskq:default:active", "taskq:default:lease", "taskq:default:retry"})
+	prefix := "taskq:" + p.ExpectedQueue + ":"
+	return runReport(ctx, rdb, failureScript, "ReportFailure", p.TaskID, p.AttemptToken, p.ExpectedQueue, p.ErrorMessage,
+		[]string{"taskq:meta:" + p.TaskID, prefix + "active", prefix + "lease", prefix + "retry"})
 }
 
-func runReport(ctx context.Context, rdb *redis.Client, script *redis.Script, operation, id, token string, content any, keys []string) (bool, error) {
+func runReport(ctx context.Context, rdb *redis.Client, script *redis.Script, operation, id, token, expectedQueue string, content any, keys []string) (bool, error) {
 	if rdb == nil || id == "" || token == "" {
 		return false, fmt.Errorf("%w: client, task and token required", ErrReportArgument)
 	}
-	response, err := script.Run(ctx, rdb, keys, id, token, content).Result()
+	if err := ValidateQueueName(expectedQueue); err != nil {
+		return false, fmt.Errorf("%w: queue %q: %w", ErrReportArgument, expectedQueue, err)
+	}
+	response, err := script.Run(ctx, rdb, keys, id, token, content, expectedQueue).Result()
 	if err != nil {
 		if redis.HasErrorPrefix(err, "TASKQ_REPORT_INCONSISTENT") {
 			err = fmt.Errorf("%w: %w", ErrReportInconsistent, err)
 		}
-		return false, fmt.Errorf("%s task %q token %q: %w", operation, id, token, err)
+		return false, fmt.Errorf("%s task %q token %q in queue %q: %w", operation, id, token, expectedQueue, err)
 	}
 	value, ok := response.(int64)
 	if !ok || value != 0 && value != 1 {
-		return false, fmt.Errorf("%w: %s task %q token %q: expected integer 0 or 1", ErrReportResponse, operation, id, token)
+		return false, fmt.Errorf("%w: %s task %q token %q in queue %q: expected integer 0 or 1", ErrReportResponse, operation, id, token, expectedQueue)
 	}
 	return value == 1, nil
 }

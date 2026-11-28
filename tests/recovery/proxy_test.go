@@ -126,7 +126,7 @@ func TestProxyDelaysAnActualWorkerReportUntilExplicitDelivery(t *testing.T) {
 	}
 	defer conn.Close()
 	// 与真实 complete 一样的 RESP2 形状，只在完整演练中由平台生成实际命令。
-	wire := []byte("*9\r\n$7\r\nevalsha\r\n$3\r\nsha\r\n$1\r\n3\r\n$17\r\ntaskq:meta:target\r\n$6\r\nactive\r\n$5\r\nlease\r\n$6\r\ntarget\r\n$5\r\ntoken\r\n$12\r\n{\"square\":9}\r\n")
+	wire := []byte("*10\r\n$7\r\nevalsha\r\n$3\r\nsha\r\n$1\r\n3\r\n$17\r\ntaskq:meta:target\r\n$6\r\nactive\r\n$5\r\nlease\r\n$6\r\ntarget\r\n$5\r\ntoken\r\n$12\r\n{\"square\":9}\r\n$7\r\ndefault\r\n")
 	if _, err := conn.Write(wire); err != nil {
 		t.Fatal(err)
 	}

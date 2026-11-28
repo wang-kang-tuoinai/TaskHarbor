@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wang-kang-tuoinai/TaskHarbor/internal/redisstore"
 )
 
 const DefaultQueue = "default"
@@ -26,8 +28,8 @@ const (
 // Server 是任务平台对外暴露的执行服务接口。内部实现类型未导出，
 // 外部只能通过该接口使用，无法直接修改 Server 的内部状态。
 type Server interface {
-	// HandleFunc 在启动开始前注册任务类型。重复注册会返回错误，
-	// 并保留原有的 handler。
+	// HandleFunc 在启动前注册任务类型。实例须注册其消费队列可能领取的全部类型。
+	// 重复注册会返回错误，并保留原有的 Handler。
 	HandleFunc(taskType string, fn HandlerFunc) error
 	// Start 封存注册，等待取消订阅确认后启动领取、续租、回收和通知消费。对象不能重复启动。
 	Start() error
@@ -48,6 +50,7 @@ type server struct {
 	reportClient    *redis.Client // 同样共享调用方池，独立使用上报的 I/O 预算，不得 Close。
 	reclaimClient   *redis.Client // 共享调用方池，使用独立回收预算，不得 Close。
 	slots           chan struct{}
+	queues          []string      // 构造完成后不可变，所有队列共用 slots。
 	leaseDuration   time.Duration // Claim/Renew 的有效期从 Redis 当前时间起算。
 	renewInterval   time.Duration
 	reclaimInterval time.Duration
@@ -93,6 +96,7 @@ type server struct {
 
 type serverConfig struct {
 	concurrency     int
+	queues          []string
 	leaseDuration   time.Duration
 	renewInterval   time.Duration
 	reclaimInterval time.Duration
@@ -101,6 +105,7 @@ type serverConfig struct {
 func defaultServerConfig() serverConfig {
 	return serverConfig{
 		concurrency:     10,
+		queues:          []string{DefaultQueue},
 		leaseDuration:   30 * time.Second,
 		renewInterval:   6 * time.Second,
 		reclaimInterval: 10 * time.Second,
@@ -109,6 +114,28 @@ func defaultServerConfig() serverConfig {
 
 // Option 在构造前配置 Server。
 type Option func(*serverConfig) error
+
+// WithQueues 设置实例按顺序轮转消费的队列。各队列共享执行槽。
+// 省略该选项时只消费 default，显式传入空列表会使构造失败。
+func WithQueues(queues ...string) Option {
+	return func(c *serverConfig) error {
+		if len(queues) == 0 {
+			return errors.New("at least one consumption queue is required")
+		}
+		seen := make(map[string]struct{}, len(queues))
+		for _, queue := range queues {
+			if err := redisstore.ValidateQueueName(queue); err != nil {
+				return fmt.Errorf("invalid consumption queue %q: %w", queue, err)
+			}
+			if _, exists := seen[queue]; exists {
+				return fmt.Errorf("duplicate consumption queue %q", queue)
+			}
+			seen[queue] = struct{}{}
+		}
+		c.queues = slices.Clone(queues)
+		return nil
+	}
+}
 
 // WithConcurrency 设置执行槽总数。
 func WithConcurrency(n int) Option {
@@ -192,6 +219,7 @@ func NewServer(rdb *redis.Client, opts ...Option) (Server, error) {
 		reportClient:      boundedRedisClient(rdb, reportRequestTimeout),
 		reclaimClient:     boundedRedisClient(rdb, reclaimRequestTimeout),
 		slots:             make(chan struct{}, cfg.concurrency),
+		queues:            cfg.queues,
 		leaseDuration:     cfg.leaseDuration,
 		renewInterval:     cfg.renewInterval,
 		reclaimInterval:   cfg.reclaimInterval,

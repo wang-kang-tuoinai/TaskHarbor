@@ -21,6 +21,7 @@ var (
 type RenewParams struct {
 	TaskID          string
 	AttemptToken    string
+	ExpectedQueue   string
 	LeaseDurationMS int64
 }
 
@@ -30,16 +31,21 @@ func Renew(ctx context.Context, rdb *redis.Client, p RenewParams) (applied bool,
 	if rdb == nil || p.TaskID == "" || p.AttemptToken == "" || p.LeaseDurationMS <= 0 || p.LeaseDurationMS > maxExactInteger {
 		return false, fmt.Errorf("%w: client, task, token and positive exact lease milliseconds required", ErrRenewArgument)
 	}
-	response, err := renewScript.Run(ctx, rdb, []string{"taskq:meta:" + p.TaskID, "taskq:default:active", "taskq:default:lease"}, p.TaskID, p.AttemptToken, p.LeaseDurationMS).Result()
+	if err := ValidateQueueName(p.ExpectedQueue); err != nil {
+		return false, fmt.Errorf("%w: queue %q: %w", ErrRenewArgument, p.ExpectedQueue, err)
+	}
+	prefix := "taskq:" + p.ExpectedQueue + ":"
+	response, err := renewScript.Run(ctx, rdb, []string{"taskq:meta:" + p.TaskID, prefix + "active", prefix + "lease"},
+		p.TaskID, p.AttemptToken, p.LeaseDurationMS, p.ExpectedQueue).Result()
 	if err != nil {
 		if redis.HasErrorPrefix(err, "TASKQ_RENEW_INCONSISTENT") {
 			err = fmt.Errorf("%w: %w", ErrRenewInconsistent, err)
 		}
-		return false, fmt.Errorf("renew task %q token %q: %w", p.TaskID, p.AttemptToken, err)
+		return false, fmt.Errorf("renew task %q token %q in queue %q: %w", p.TaskID, p.AttemptToken, p.ExpectedQueue, err)
 	}
 	value, ok := response.(int64)
 	if !ok || value != 0 && value != 1 {
-		return false, fmt.Errorf("%w: task %q token %q: expected integer 0 or 1", ErrRenewResponse, p.TaskID, p.AttemptToken)
+		return false, fmt.Errorf("%w: task %q token %q in queue %q: expected integer 0 or 1", ErrRenewResponse, p.TaskID, p.AttemptToken, p.ExpectedQueue)
 	}
 	return value == 1, nil
 }

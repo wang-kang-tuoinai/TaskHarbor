@@ -142,7 +142,7 @@ func TestRenewSkipsRemovedSnapshotAndPreservesNewAttempt(t *testing.T) {
 		s.revokeExecution(oldKey, oldRecord, errExecutionLost)
 		newKey := executionKey{taskID: oldKey.taskID, attemptToken: "new-attempt"}
 		s.slots <- struct{}{}
-		done, err := s.acceptExecution(context.Background(), &Task{ID: newKey.taskID, Type: "job", Attempts: 2}, newKey, time.Minute)
+		done, err := s.acceptExecution(context.Background(), &Task{ID: newKey.taskID, Type: "job", Attempts: 2}, newKey, DefaultQueue, time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}

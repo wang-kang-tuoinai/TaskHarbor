@@ -20,7 +20,7 @@ const (
 )
 
 func (s *server) complete(ctx context.Context, record *execution, key executionKey, result []byte) {
-	p := redisstore.CompleteParams{TaskID: key.taskID, AttemptToken: key.attemptToken, Result: result}
+	p := redisstore.CompleteParams{TaskID: key.taskID, AttemptToken: key.attemptToken, ExpectedQueue: record.queue, Result: result}
 	s.report(ctx, record, key, "complete", func(request context.Context) (bool, error) { return redisstore.Complete(request, s.reportClient, p) })
 }
 
@@ -37,7 +37,7 @@ func (s *server) reportFailure(ctx context.Context, record *execution, key execu
 		}
 		message = message[:end] + errorTruncationMarker
 	}
-	p := redisstore.FailureParams{TaskID: key.taskID, AttemptToken: key.attemptToken, ErrorMessage: message}
+	p := redisstore.FailureParams{TaskID: key.taskID, AttemptToken: key.attemptToken, ExpectedQueue: record.queue, ErrorMessage: message}
 	s.report(ctx, record, key, "ReportFailure", func(request context.Context) (bool, error) {
 		return redisstore.ReportFailure(request, s.reportClient, p)
 	})

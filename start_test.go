@@ -155,7 +155,7 @@ func TestStartHandsClaimToHandler(t *testing.T) {
 		}
 		select {
 		case key := <-completed:
-			if len(request) != 9 || request[6] != s.ownerID || request[7] == "" || request[8] != int64(30000) || key.taskID != "id" || key.attemptToken != request[7] {
+			if len(request) != 10 || request[6] != s.ownerID || request[7] == "" || request[8] != int64(30000) || request[9] != DefaultQueue || key.taskID != "id" || key.attemptToken != request[7] {
 				t.Fatalf("request=%#v key=%+v owner=%q", request, key, s.ownerID)
 			}
 		default:

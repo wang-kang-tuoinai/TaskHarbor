@@ -30,7 +30,7 @@ func claimHookClient(t *testing.T, process func(context.Context, redis.Cmder) er
 }
 
 func TestClaimValidation(t *testing.T) {
-	p := ClaimParams{OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 30000}
+	p := ClaimParams{Queue: "default", OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 30000}
 	if task, err := Claim(context.Background(), nil, p); task != nil || !errors.Is(err, ErrClaimArgument) {
 		t.Fatalf("nil client: task=%+v err=%v", task, err)
 	}
@@ -39,8 +39,9 @@ func TestClaimValidation(t *testing.T) {
 		return nil
 	})
 	for _, bad := range []ClaimParams{
-		{"", "token", 1}, {"owner", "", 1}, {"owner", "token", 0},
-		{"owner", "token", -1}, {"owner", "token", maxExactInteger + 1},
+		{"default", "", "token", 1}, {"default", "owner", "", 1}, {"default", "owner", "token", 0},
+		{"default", "owner", "token", -1}, {"default", "owner", "token", maxExactInteger + 1},
+		{"", "owner", "token", 1}, {"meta", "owner", "token", 1},
 	} {
 		if task, err := Claim(context.Background(), rdb, bad); task != nil || !errors.Is(err, ErrClaimArgument) {
 			t.Fatalf("params=%+v task=%+v err=%v", bad, task, err)
@@ -55,7 +56,7 @@ func (e claimRedisError) Error() string { return string(e) }
 func (e claimRedisError) RedisError()   {}
 
 func TestClaimErrorsAndFallback(t *testing.T) {
-	p := ClaimParams{OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 30000}
+	p := ClaimParams{Queue: "default", OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 30000}
 	for _, cause := range []error{
 		io.EOF, &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded},
 		context.Canceled, claimRedisError("NOPERM forbidden"), claimRedisError("WRONGTYPE invalid key"),
@@ -97,7 +98,7 @@ func TestClaimErrorsAndFallback(t *testing.T) {
 }
 
 func TestClaimResponse(t *testing.T) {
-	p := ClaimParams{OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 1}
+	p := ClaimParams{Queue: "default", OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 1}
 	valid := []any{"id", "job", "\x00\xff\r\n", "default", "2147483647", "86400000"}
 	// 通过 Claim 验证解析失败也不重放请求，且不会返回可执行任务。
 	responses := []any{nil, "scalar", []any{"id"}, append(append([]any{}, valid...), "extra")}

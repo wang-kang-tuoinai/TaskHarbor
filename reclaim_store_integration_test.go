@@ -96,7 +96,7 @@ func seedReclaimCandidate(t *testing.T, rdb *redis.Client, id string, retryPhase
 	}
 	source := claimLease
 	if retryPhase {
-		if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: id, AttemptToken: "old-" + id, ErrorMessage: "job failed"}); !applied || err != nil {
+		if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "old-" + id, ErrorMessage: "job failed"}); !applied || err != nil {
 			t.Fatalf("failure applied=%v err=%v", applied, err)
 		}
 		source = reclaimRetry
@@ -280,7 +280,7 @@ func TestReclaimRedisDueRetries(t *testing.T) {
 		if claim, err := redisstore.Claim(ctx, rdb, claimParams("old-"+id)); err != nil || claim == nil || claim.TaskID != id {
 			t.Fatalf("claim=%+v err=%v", claim, err)
 		}
-		if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{TaskID: id, AttemptToken: "old-" + id, ErrorMessage: "job failed"}); !applied || err != nil {
+		if applied, err := redisstore.ReportFailure(ctx, rdb, redisstore.FailureParams{ExpectedQueue: DefaultQueue, TaskID: id, AttemptToken: "old-" + id, ErrorMessage: "job failed"}); !applied || err != nil {
 			t.Fatalf("failure applied=%v err=%v", applied, err)
 		}
 	}

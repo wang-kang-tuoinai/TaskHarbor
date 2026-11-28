@@ -27,7 +27,7 @@ const (
 )
 
 func claimParams(token string) redisstore.ClaimParams {
-	return redisstore.ClaimParams{OwnerID: "owner", AttemptToken: token, LeaseDurationMS: 30000}
+	return redisstore.ClaimParams{Queue: DefaultQueue, OwnerID: "owner", AttemptToken: token, LeaseDurationMS: 30000}
 }
 
 // 比较临时实例中的全部业务 key，证明失败前没有任何可预见的部分写入。
@@ -200,10 +200,10 @@ func TestClaimRedisRejectsWithoutWrites(t *testing.T) {
 		mustSubmit(t, c, "id", "job", nil)
 		before := claimSnapshot(t, rdb)
 		for _, p := range []redisstore.ClaimParams{
-			{OwnerID: "", AttemptToken: "token", LeaseDurationMS: 1},
-			{OwnerID: "owner", AttemptToken: "", LeaseDurationMS: 1},
-			{OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 0},
-			{OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 1 << 53},
+			{Queue: DefaultQueue, OwnerID: "", AttemptToken: "token", LeaseDurationMS: 1},
+			{Queue: DefaultQueue, OwnerID: "owner", AttemptToken: "", LeaseDurationMS: 1},
+			{Queue: DefaultQueue, OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 0},
+			{Queue: DefaultQueue, OwnerID: "owner", AttemptToken: "token", LeaseDurationMS: 1 << 53},
 		} {
 			if task, err := redisstore.Claim(ctx, rdb, p); task != nil || !errors.Is(err, redisstore.ErrClaimArgument) {
 				t.Fatalf("task=%+v err=%v", task, err)

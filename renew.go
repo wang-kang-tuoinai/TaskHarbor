@@ -29,7 +29,7 @@ func (s *server) renewLoop() {
 			}
 			ctx, cancel := context.WithTimeout(s.renewCtx, s.renewInterval)
 			applied, err := redisstore.Renew(ctx, s.renewClient, redisstore.RenewParams{
-				TaskID: key.taskID, AttemptToken: key.attemptToken, LeaseDurationMS: s.leaseDuration.Milliseconds(),
+				TaskID: key.taskID, AttemptToken: key.attemptToken, ExpectedQueue: record.queue, LeaseDurationMS: s.leaseDuration.Milliseconds(),
 			})
 			cancel()
 			if s.renewCtx.Err() != nil {
