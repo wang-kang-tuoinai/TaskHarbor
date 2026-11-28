@@ -258,43 +258,74 @@ func TestClaimTCPShutdownWaitsForRequestDeadline(t *testing.T) {
 }
 
 func TestClaimTCPEmptyRoundAndShutdown(t *testing.T) {
-	requests := make(chan claimTCPRequest, 16)
+	wantQueues := []string{"mail", "sms", "mail", "sms", "mail"}
+	requests := make(chan claimTCPRequest, len(wantQueues))
+	releaseReply := make(chan struct{})
+	defer closeShutdownGate(releaseReply)
+	var calls atomic.Int32
 	addr := serveClaimTCP(t, func(connection int, args []string) string {
 		if isClaimTCPCommand(args) {
-			select {
-			case requests <- claimTCPCommand(connection, args):
-			default:
+			call := int(calls.Add(1))
+			if call <= len(wantQueues) {
+				requests <- claimTCPCommand(connection, args)
+			}
+			// 第三轮首个空响应等到停领后再发送，确保可以验证停领后是否还会探测下一队列。
+			if call == len(wantQueues) {
+				<-releaseReply
 			}
 			return "*0\r\n"
 		}
 		return claimTCPDefaultReply(args)
 	})
-	rdb := claimTCPClient(t, addr, time.Second, time.Second)
+	rdb := claimTCPClient(t, addr, 8*time.Second, 8*time.Second)
 	s := startClaimServer(t, rdb, unexpectedClaimHandler(t), WithQueues("mail", "sms"))
 	tokens := make(map[string]bool)
-	var lastRoundEnd time.Time
-	for range 2 {
-		for _, queue := range []string{"mail", "sms"} {
-			req := awaitClaimSignal(t, requests, time.Second)
-			if req.queue != queue || req.token == "" || tokens[req.token] {
-				t.Fatalf("Claim = %+v, want queue %q and a fresh token", req, queue)
-			}
-			tokens[req.token] = true
-			if queue == "mail" && !lastRoundEnd.IsZero() && req.received.Sub(lastRoundEnd) < claimPollInterval {
-				t.Fatal("next round started before waiting after two empty replies")
-			}
-			if queue == "sms" {
-				lastRoundEnd = req.received
-			}
+	var previous time.Time
+	for i, queue := range wantQueues {
+		req := awaitClaimSignal(t, requests, time.Second)
+		if req.queue != queue || req.token == "" || tokens[req.token] {
+			t.Fatalf("Claim = %+v, want queue %q and a fresh token", req, queue)
+		}
+		tokens[req.token] = true
+		if i > 0 && queue == "mail" && req.received.Sub(previous) < claimPollInterval {
+			t.Fatal("next round started before waiting after two empty replies")
+		}
+		previous = req.received
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown with pending empty reply = %v, want deadline exceeded", err)
+	}
+	ctx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := s.Shutdown(ctx); !errors.Is(err, ErrShutdownInProgress) {
+		t.Fatalf("Shutdown before releasing the reply = %v, want shutdown in progress", err)
+	}
+	close(releaseReply)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := s.Shutdown(ctx)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrShutdownInProgress) {
+			t.Fatalf("Shutdown after releasing the reply: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("Server did not stop after receiving the empty reply")
+		case <-ticker.C:
 		}
 	}
-	shutdownClaimServer(t, s)
+	if got := int(calls.Load()); got != len(wantQueues) {
+		t.Fatalf("TCP endpoint received %d Claim requests, want %d through the first probe of the third round", got, len(wantQueues))
+	}
 	select {
-	case req := <-requests:
-		t.Fatalf("Claim continued after stop: %+v", req)
 	case err := <-s.Errors():
 		t.Fatalf("empty queue reported a fatal error: %v", err)
-	case <-time.After(2 * claimPollInterval):
+	default:
 	}
 }
 
