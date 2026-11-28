@@ -118,6 +118,100 @@ func requirePending(t *testing.T, rdb *redis.Client, want ...string) {
 	}
 }
 
+func TestClientRedisLegacyDefaultQueue(t *testing.T) {
+	rdb := startSubmitRedis(t)
+	ctx := context.Background()
+	const id, taskType, payload = "legacy-default", "job", `{"legacy":true}`
+	const createdAt = 1700000000123
+	// 直接写入多队列支持前的 Submit 格式，验证读取和取消无需迁移。
+	fields := map[string]string{
+		"task_id": id, "task_type": taskType, "payload": payload,
+		"max_retry": "0", "execution_timeout_ms": "60000", "retry_delay_ms": "30000",
+		"queue": "default", "status": "pending", "attempts": "0", "created_at": "1700000000123",
+	}
+	if err := rdb.HSet(ctx, "taskq:meta:"+id, fields).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.RPush(ctx, "taskq:default:pending", id).Err(); err != nil {
+		t.Fatal(err)
+	}
+	c := integrationClient(t, rdb)
+
+	if got := mustSubmit(t, c, id, taskType, []byte(payload)); got.Created || got.TaskID != id {
+		t.Fatalf("Submit with omitted queue = %+v, want duplicate of %q", got, id)
+	}
+	if got := mustSubmit(t, c, id, taskType, []byte(payload), WithSubmitQueue("default")); got.Created || got.TaskID != id {
+		t.Fatalf("Submit with explicit default queue = %+v, want duplicate of %q", got, id)
+	}
+	pending := requireTaskSnapshot(t, c, id, "pending", 0)
+	if pending.Queue != "default" || pending.TaskType != taskType || string(pending.Payload) != payload || pending.CreatedAt.UnixMilli() != createdAt {
+		t.Fatalf("unexpected legacy task: %+v", pending)
+	}
+	if got := submitHash(t, rdb, id); !reflect.DeepEqual(got, fields) {
+		t.Fatalf("duplicate Submit or GetTask changed the legacy hash: got %q, want %q", got, fields)
+	}
+	requirePending(t, rdb, id)
+
+	requireCancel(t, c, id, CancelCanceled, "canceled")
+	canceled := requireTaskSnapshot(t, c, id, "canceled", 0)
+	fields["status"] = "canceled"
+	fields["finished_at"] = strconv.FormatInt(canceled.FinishedAt.UnixMilli(), 10)
+	if got := submitHash(t, rdb, id); !reflect.DeepEqual(got, fields) {
+		t.Fatalf("legacy hash after Cancel = %q, want %q", got, fields)
+	}
+	requirePending(t, rdb)
+}
+
+func TestSubmitRedisQueueRouting(t *testing.T) {
+	rdb := startSubmitRedis(t)
+	c := integrationClient(t, rdb)
+	ctx := context.Background()
+
+	mustSubmit(t, c, "implicit-default", "job", nil)
+	if got := mustSubmit(t, c, "implicit-default", "job", nil, WithSubmitQueue("default")); got.Created {
+		t.Fatal("explicit default recreated an existing task")
+	}
+	requirePending(t, rdb, "implicit-default")
+
+	for _, queue := range []string{"A", "Mail_9-queue", "mail_9-queue", "Meta", strings.Repeat("z", 64)} {
+		t.Run(queue, func(t *testing.T) {
+			id := "task-" + queue
+			opt := WithSubmitQueue(queue)
+			if got := mustSubmit(t, c, id, "job", nil, opt); !got.Created || got.TaskID != id {
+				t.Fatalf("Submit = %+v", got)
+			}
+			if got := mustSubmit(t, c, id, "job", nil, opt); got.Created {
+				t.Fatal("same queue recreated an existing task")
+			}
+			const otherQueue = "other"
+			if got, err := c.Submit(ctx, id, "job", nil, WithSubmitQueue(otherQueue)); got != nil || !errors.Is(err, ErrTaskIDConflict) {
+				t.Fatalf("Submit to %q = %+v, %v", otherQueue, got, err)
+			}
+			if got := submitHash(t, rdb, id)["queue"]; got != queue {
+				t.Fatalf("stored queue = %q, want %q", got, queue)
+			}
+			if got, err := rdb.LRange(ctx, "taskq:"+queue+":pending", 0, -1).Result(); err != nil || !reflect.DeepEqual(got, []string{id}) {
+				t.Fatalf("%q pending = %q, %v", queue, got, err)
+			}
+			if n, err := rdb.Exists(ctx, "taskq:"+otherQueue+":pending").Result(); err != nil || n != 0 {
+				t.Fatalf("conflicting submission touched %q pending: exists=%d, %v", otherQueue, n, err)
+			}
+		})
+	}
+
+	for _, queue := range []string{"", "meta", "two:parts", "has space", "line\n", "邮", strings.Repeat("z", 65)} {
+		t.Run(fmt.Sprintf("invalid/%q", queue), func(t *testing.T) {
+			if got, err := c.Submit(ctx, "invalid-queue", "job", nil, WithSubmitQueue(queue)); got != nil || !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Submit to %q = %+v, %v", queue, got, err)
+			}
+			if n, err := rdb.Exists(ctx, "taskq:meta:invalid-queue", "taskq:"+queue+":pending").Result(); err != nil || n != 0 {
+				t.Fatalf("invalid submission wrote a hash or index: exists=%d, %v", n, err)
+			}
+		})
+	}
+	requirePending(t, rdb, "implicit-default")
+}
+
 func TestSubmitRedis(t *testing.T) {
 	rdb := startSubmitRedis(t)
 	c := integrationClient(t, rdb)

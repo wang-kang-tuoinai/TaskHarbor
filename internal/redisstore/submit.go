@@ -33,6 +33,7 @@ var (
 type SubmitParams struct {
 	TaskID             string
 	TaskType           string
+	Queue              string
 	Payload            []byte
 	MaxRetry           int
 	ExecutionTimeoutMS int64
@@ -62,8 +63,8 @@ func ValidateTaskType(taskType string) error {
 // Submit 只负责序列化和调用；参数校验由公开 Client 边界完成。
 func Submit(ctx context.Context, rdb *redis.Client, p SubmitParams) (*SubmitResult, error) {
 	response, err := submitScript.Run(ctx, rdb,
-		[]string{"taskq:meta:" + p.TaskID, "taskq:default:pending"},
-		p.TaskID, p.TaskType, p.Payload, p.MaxRetry, p.ExecutionTimeoutMS, p.RetryDelayMS, "default",
+		[]string{"taskq:meta:" + p.TaskID, "taskq:" + p.Queue + ":pending"},
+		p.TaskID, p.TaskType, p.Payload, p.MaxRetry, p.ExecutionTimeoutMS, p.RetryDelayMS, p.Queue,
 	).Result()
 	if err != nil {
 		return nil, fmt.Errorf("run submit script: %w", err)

@@ -1,4 +1,4 @@
-local meta, pending, active, lease, retry = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
+local meta = KEYS[1]
 local id = ARGV[1]
 
 local function inconsistent(reason)
@@ -20,10 +20,16 @@ if status ~= 'pending' and status ~= 'running' and status ~= 'retry_wait' then
     return inconsistent('invalid task status')
 end
 local fields = redis.call('HMGET', meta, 'task_id', 'queue', 'owner_id', 'attempt_token')
-if fields[1] ~= id or fields[2] ~= 'default' then
+local queue = fields[2]
+-- 校验规则与 Go 的 ValidateQueueName 一致，避免用损坏记录访问其他键空间。
+if fields[1] ~= id or not queue or #queue == 0 or #queue > 64 or queue == 'meta' or
+    string.find(queue, '[^A-Za-z0-9_-]') then
     return inconsistent('invalid task identity or queue')
 end
 
+-- 从同一次脚本执行读到的权威队列确定索引，校验与迁移共享原子边界。
+local prefix = 'taskq:' .. queue .. ':'
+local pending, active, lease, retry = prefix .. 'pending', prefix .. 'active', prefix .. 'lease', prefix .. 'retry'
 local active_type = redis.call('TYPE', active).ok
 local lease_type = redis.call('TYPE', lease).ok
 local retry_type = redis.call('TYPE', retry).ok

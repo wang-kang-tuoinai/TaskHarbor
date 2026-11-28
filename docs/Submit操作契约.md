@@ -1,8 +1,8 @@
 # 操作契约：Submit
 
-## 多队列修订（已确认，待实施）
+## 所属队列
 
-任务 ID 全局唯一。提交选项可指定队列，省略取 default，显式空值非法。首次提交固定所属队列；同 ID 换队列按配置冲突处理。创建记录并加入所属队列的 pending 仍是一次原子操作。 队列语义及兼容边界见 [ADR-0011](adr/0011-multi-queue-routing.md)。下文固定 default 的示例描述首版。
+任务 ID 全局唯一。首次提交确定所属队列，创建记录与加入所属队列的 pending 在一次原子操作中完成。现有 default 数据无需迁移。[ADR-0011](adr/0011-multi-queue-routing.md)
 
 > 适用于当前 Go 异步任务平台的初版设计。初版仅使用 Redis，不引入 MySQL；任务详情存储于 Hash，索引迁移通过 Redis Lua 完成。
 >
@@ -29,11 +29,14 @@ Submit 成功表示平台已接受该任务，不表示任务已经执行成功�
 | `task_id`           | 整个任务的唯一标识                            | 必填、非空，由调用方提供，平台不自动生成；同一次逻辑提交的重试必须复用          |
 | `task_type`         | 执行端查找 handler 使用的任务类型                | 必填、非空，符合平台规定的格式与长度                           |
 | `payload`           | 交给 handler 的业务参数                     | 无参数任务允许为空，大小不能超过平台配置上限                       |
+| `queue`             | 任务的所属队列                         | 可选，使用 `WithSubmitQueue` 设置，省略取 `default`                   |
 | `max_retry`         | 首次尝试之外允许重试的最大次数                      | 可选，默认 0，非负整数；0 表示不重试                              |
 | `execution_timeout_ms` | 单次执行尝试的时长上限                          | 可选，单位为整数毫秒；省略时默认 60000；显式提供时必须大于 0，且不超过平台公开的时长上限 |
 | `retry_delay_ms`       | 每次进入 retry_wait 后等待下一次可领取的时长 | 可选，单位为整数毫秒；省略时默认 30000；显式提供时必须 ≥ 15000，且不超过平台公开的上限 |
 
 ### 参数规范化
+
+队列名为 1～64 字节的 ASCII 字母、数字、下划线或连字符，区分大小写。显式空值和保留名 `meta` 非法。省略队列与显式指定 `default` 等价。
 
 max_retry 省略时规范化为 0，与显式 0 等价；保存并比较最终值，并确保 max_retry + 1 可安全表示。
 
@@ -148,7 +151,7 @@ Submit 校验类型标识的格式。除非另行设计统一的类型注册信�
 ### 首次创建
 
 - 状态变化：无记录 → pending。
-- 保存 task_id、task_type、原始 payload、max_retry、规范化后的 execution_timeout_ms、retry_delay_ms、queue = default 和 created_at到任务详情 Hash。
+- 保存 task_id、task_type、原始 payload、max_retry、规范化后的 execution_timeout_ms、retry_delay_ms、有效 queue 和 created_at 到任务详情 Hash。
 - 保存不可变的初始提交配置，供后续重复请求比较。
 - 不要求另建一张表或复制一份初始配置，只要后续操作不覆盖原始值即可。
 - 初始化 status = pending。
@@ -302,7 +305,7 @@ func (c *Client) Submit(ctx context.Context, taskID, taskType string, payload []
 - max_retry。
 - 规范化后的 execution_timeout_ms。
 - 规范化后的 retry_delay_ms。
-- 固定的 queue（default）。
+- 首次提交确定的 queue。
 
 以下运行数据不参与比较：
 
@@ -319,9 +322,7 @@ execution_timeout_ms、retry_delay_ms 都是不可变初始配置；初版不保
 
 同一 ID 下仅修改 execution_timeout_ms 或 retry_delay_ms，也必须返回内容冲突，不能覆盖原配置。
 
-第一版 Client 和 Server 只提交和处理 default 队列，不开放 queue 选项。queue 仍作为不可变字段保存并参与幂等比较；已有记录的 queue 不为 default 时返回冲突。
-
-以后开放队列选择等提交参数时，应同步定义默认值、输入校验与比较规则。
+同一 ID 换用其他队列时返回 `ErrTaskIDConflict`，原任务及索引保持原状。
 
 ### payload 比较规则
 
